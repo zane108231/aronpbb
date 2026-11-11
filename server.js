@@ -15,6 +15,7 @@ const streams = [
 ];
 
 app.disable('x-powered-by');
+app.use('/vendor/shaka-player', express.static(path.join(__dirname, 'node_modules', 'shaka-player', 'dist')));
 app.use(express.static(publicDirectory));
 
 app.get('/api/streams', (_request, response) => {

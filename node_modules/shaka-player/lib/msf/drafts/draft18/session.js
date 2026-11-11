@@ -1,0 +1,1332 @@
+/*! @license
+ * Shaka Player
+ * Copyright 2016 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+goog.provide('shaka.msf.draft18.Session');
+
+goog.require('shaka.log');
+goog.require('shaka.msf.JoinGate');
+goog.require('shaka.msf.Reader');
+goog.require('shaka.msf.TrackAliasRegistry');
+goog.require('shaka.msf.Utils');
+goog.require('shaka.msf.Writer');
+goog.require('shaka.msf.draft18.MessageTypeId');
+goog.require('shaka.msf.draft18.MessageWriter');
+goog.require('shaka.util.Functional');
+
+
+/**
+ * A session for the draft-18 family of MoQT drafts, which includes draft-20
+ * and draft-21.
+ *
+ * The topology is what separates this from draft-16:
+ *
+ *  - Control messages travel on a *pair* of unidirectional streams, one
+ *    opened by each peer, each beginning with a SETUP message. Incoming
+ *    unidirectional streams therefore carry either the peer's control stream
+ *    or object data, told apart by the first message type on the stream.
+ *  - Every request gets its own bidirectional stream, and the response comes
+ *    back on that same stream. There is no Request ID on responses and no
+ *    dispatch table: the stream *is* the correlation, so a request is just an
+ *    await on its own reader.
+ *
+ * Draft-20 shares all of that, along with every message type ID this session
+ * reads and the whole data plane, so it reuses this class rather than copying
+ * it. The only draft-20 difference in reach here is the FETCH body, and the
+ * only draft-22 one is how LOCATION_FILTER is encoded; the message writer owns
+ * both, and the dialect supplies the writer.
+ *
+ * @implements {shaka.extern.MsfSession}
+ * @final
+ */
+shaka.msf.draft18.Session = class {
+  /**
+   * @param {!WebTransport} webTransport
+   * @param {!shaka.msf.Writer} controlWriter Our outgoing control stream,
+   *   already carrying our SETUP.
+   * @param {!shaka.extern.MsfDialect} dialect
+   * @param {!shaka.extern.MsfManifestConfiguration} config
+   * @param {function():!shaka.msf.draft18.MessageWriter} messageWriterFactory
+   *   Builds a writer for this draft's control messages.
+   */
+  constructor(webTransport, controlWriter, dialect, config,
+      messageWriterFactory) {
+    /** @private {!WebTransport} */
+    this.webTransport_ = webTransport;
+
+    /** @private {!shaka.msf.Writer} */
+    this.controlWriter_ = controlWriter;
+
+    /** @private {!shaka.extern.MsfDialect} */
+    this.dialect_ = dialect;
+
+    /** @private {!shaka.extern.MsfManifestConfiguration} */
+    this.config_ = config;
+
+    /** @private {function():!shaka.msf.draft18.MessageWriter} */
+    this.messageWriterFactory_ = messageWriterFactory;
+
+    /**
+     * Kept only to ask how this draft encodes each Message Parameter, which
+     * the message layer owns because draft-22 changed one of them.
+     *
+     * @private {!shaka.msf.draft18.MessageWriter}
+     */
+    this.parameterFormat_ = messageWriterFactory();
+
+    /** @private {!shaka.msf.TrackAliasRegistry} */
+    this.trackRegistry_ = new shaka.msf.TrackAliasRegistry();
+
+    /** @private {bigint} */
+    this.nextRequestId_ = BigInt(0);
+
+    /** @private {boolean} */
+    this.isClosing_ = false;
+
+    /** @private {!Set<function(Array<string>)>} */
+    this.publishNamespaceCallbacks_ = new Set();
+
+    /**
+     * The fetches in flight, by request ID. `accepted` settles once the
+     * FETCH_OK or REQUEST_ERROR arrives: a publisher may start sending Objects
+     * before it answers, and they are held until then, because the Track
+     * Properties that say how to read them are in the FETCH_OK.
+     *
+     * @private {!Map<bigint, shaka.msf.draft18.Session.PendingFetch>}
+     */
+    this.fetches_ = new Map();
+
+    /**
+     * The Track Properties of each subscription's SUBSCRIBE_OK, by track
+     * alias, for subscriptions that had any.
+     *
+     * @private {!Map<bigint, !Uint8Array>}
+     */
+    this.trackProperties_ = new Map();
+
+    /**
+     * The request stream each subscription lives on, by track alias. The
+     * stream IS the subscription, so it is what has to be torn down to
+     * withdraw one.
+     *
+     * @private {!Map<bigint,
+     *           {reader: !shaka.msf.Reader, writer: !shaka.msf.Writer}>}
+     */
+    this.subscribeStreams_ = new Map();
+
+    /**
+     * The Request ID of the Joining FETCH sent for a subscription, by track
+     * alias, so that withdrawing the subscription withdraws it too.
+     *
+     * @private {!Map<bigint, bigint>}
+     */
+    this.joiningFetches_ = new Map();
+
+    /**
+     * What puts the Objects of a subscription that joins the current Group in
+     * order, by track alias, until the subscription goes.
+     *
+     * @private {!Map<bigint, !shaka.msf.JoinGate>}
+     */
+    this.joinGates_ = new Map();
+
+    this.watchForSessionEnd_();
+
+    this.startListeningForStreams_();
+  }
+
+  /**
+   * A session the peer hangs up on resets every stream on it at once, and
+   * each of those failures would otherwise be logged as an error of its own.
+   * Watch the transport instead: once the session is gone, its stream errors
+   * are expected, and the reason the session ended is the one worth reporting.
+   *
+   * @private
+   */
+  watchForSessionEnd_() {
+    const onEnd = (reason) => {
+      if (!this.isClosing_) {
+        this.isClosing_ = true;
+        shaka.log.warning(`MoQT session ended: ${reason}`);
+      }
+    };
+    this.webTransport_.closed.then(
+        (info) => {
+          const closeInfo = /** @type {{closeCode: number, reason: string}} */ (
+            info || {closeCode: 0, reason: ''});
+          onEnd(`code ${closeInfo.closeCode}` +
+              (closeInfo.reason ? `: ${closeInfo.reason}` : ''));
+        },
+        (error) => {
+          onEnd(String(error));
+        });
+  }
+
+  /** @override */
+  configure(config) {
+    this.config_ = config;
+  }
+
+  /**
+   * Client Request IDs are even and start at 0.
+   *
+   * @return {bigint}
+   * @private
+   */
+  getNextRequestId_() {
+    const requestId = this.nextRequestId_;
+    this.nextRequestId_ += BigInt(2);
+    return requestId;
+  }
+
+  /**
+   * Opens a bidirectional stream, writes a request onto it and returns both
+   * halves: the reader the response arrives on, and the writer, which is
+   * kept only so the stream can be torn down to withdraw the request. The
+   * stream is the correlation, so nothing is registered anywhere.
+   *
+   * @param {!Uint8Array} requestBytes
+   * @return {!Promise<{reader: !shaka.msf.Reader, writer: !shaka.msf.Writer}>}
+   * @private
+   */
+  async openRequest_(requestBytes) {
+    const stream = await this.webTransport_.createBidirectionalStream();
+    const writer = new shaka.msf.Writer(stream.writable);
+    await writer.write(requestBytes);
+    const reader = new shaka.msf.Reader(
+        new Uint8Array([]), stream.readable, this.dialect_.getCodec());
+    return {reader, writer};
+  }
+
+  /**
+   * Reads one control message header from a stream.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @return {!Promise<{type: number, length: number}>}
+   * @private
+   */
+  async readMessageHeader_(reader) {
+    const type = await reader.u53();
+    const lengthBytes = await reader.read(2);
+    return {type, length: (lengthBytes[0] << 8) | lengthBytes[1]};
+  }
+
+  /**
+   * Waits for the response to a request, which is either a REQUEST_OK-shaped
+   * acknowledgement or a REQUEST_ERROR.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @param {number} okType The success message type for this request.
+   * @param {string} description Used in error messages.
+   * @return {!Promise<{type: number, length: number}>} The response header.
+   *   The reader is left positioned just after it.
+   * @private
+   */
+  async awaitResponse_(reader, okType, description) {
+    const header = await this.readMessageHeader_(reader);
+
+    if (header.type == shaka.msf.draft18.MessageTypeId.REQUEST_ERROR) {
+      // REQUEST_ERROR: Error Code, Retry Interval, Reason, then an optional
+      // Redirect we do not act on.
+      const code = await reader.u62();
+      await reader.u62(); // Retry Interval
+      const reason = await reader.string();
+      throw new Error(
+          `${description} failed: code ${code}, reason "${reason}"`);
+    }
+
+    if (header.type != okType) {
+      throw new Error(`${description}: unexpected response type ` +
+          `0x${header.type.toString(16)}`);
+    }
+
+    return header;
+  }
+
+  /** @override */
+  async subscribe(namespace, trackName, callback, startLocation,
+      joinCurrentGroup) {
+    const description = `subscribe ${namespace.join('/')}:${trackName}`;
+    const requestId = this.getNextRequestId_();
+
+    const writer = this.messageWriterFactory_();
+    const params = this.buildSubscribeParams_(writer, startLocation);
+
+    // The current Group and the rest of the subscription arrive on different
+    // streams, and the gate puts them back in order.
+    const gate = joinCurrentGroup ?
+        new shaka.msf.JoinGate(callback, description) : null;
+
+    // Where the draft can ask for the current Group in the SUBSCRIBE itself,
+    // it arrives on a fill fetch stream that carries this request's ID, so it
+    // is expected like the answer to a FETCH.
+    /** @type {?shaka.msf.draft18.Session.PendingFetch} */
+    let fill = null;
+    if (gate) {
+      const fillParam = writer.fillCurrentGroupParam();
+      if (fillParam) {
+        params.push(fillParam);
+        if (!startLocation) {
+          // The fill delivers through Largest Object. Start the subscription
+          // at Next Object so the first subgroup stream can end with FIN
+          // without also carrying the fill's earlier Objects (draft-22
+          // sections 3.5 and 11.3.2).
+          const filterParam = writer.nextObjectFilterParam();
+          if (filterParam) {
+            params.push(filterParam);
+          }
+        }
+        fill = {
+          callback: (obj) => gate.fromFill(obj),
+          accepted: Promise.withResolvers(),
+          trackProperties: null,
+          onStart: () => gate.fillStarted(),
+          onEnd: () => gate.open(),
+        };
+        this.fetches_.set(requestId, fill);
+      }
+    }
+
+    writer.marshalSubscribe({requestId, namespace, trackName, params});
+
+    let request;
+    let header;
+    const requestedAtMs = Date.now();
+    try {
+      request = await this.openRequest_(writer.getBytes());
+      header = await this.awaitResponse_(request.reader,
+          shaka.msf.draft18.MessageTypeId.SUBSCRIBE_OK, description);
+    } catch (error) {
+      if (fill) {
+        this.forgetFetch_(requestId);
+      }
+      gate?.release();
+      throw error;
+    }
+    const roundTripSeconds = (Date.now() - requestedAtMs) / 1000;
+    const reader = request.reader;
+
+    // SUBSCRIBE_OK leads with the Track Alias; draft-16 put a Request ID
+    // ahead of it, which is gone here.
+    const trackAlias = await reader.u62WithSize();
+
+    // Parameters and Track Properties follow. The whole payload has to be
+    // consumed either way: the stream stays open for PUBLISH_DONE, and the
+    // next message header would otherwise be read out of it.
+    const rest = await this.readRest_(reader, header, trackAlias.bytesRead);
+    const tail = this.readResponseTail_(
+        rest, /* offset= */ 0, /* leadingVarInts= */ 0, description);
+    const trackProperties = tail.trackProperties;
+    if (trackProperties) {
+      this.trackProperties_.set(trackAlias.value, trackProperties);
+    }
+
+    this.trackRegistry_.registerTrackWithAlias(
+        namespace, trackName, requestId, trackAlias.value);
+    this.trackRegistry_.registerCallback(trackAlias.value,
+        gate ? (obj) => gate.fromSubscription(obj) : callback);
+
+    shaka.log.debug(`Subscribed to ${description}, alias ${trackAlias.value}`);
+
+    // Hold the stream open: it is the subscription's lifetime, and
+    // REQUEST_UPDATE and PUBLISH_DONE arrive on it.
+    this.subscribeStreams_.set(trackAlias.value, request);
+    this.listenOnRequestStream_(reader, trackAlias.value);
+
+    if (gate) {
+      this.joinGates_.set(trackAlias.value, gate);
+      if (fill) {
+        // The fill ends at the Largest Object, and a track with none has
+        // nothing to fill, so no fill fetch stream is coming. Otherwise the
+        // publisher opens one as it answers, and resets it to refuse the
+        // fill (draft-22 section 3.4.1). A reset can lose the FETCH_HEADER,
+        // and some relays open no stream at all, so a stream that has not
+        // shown up a few round trips after the answer is not coming.
+        const Session = shaka.msf.draft18.Session;
+        gate.expect(tail.largestObject, Session.JOIN_TIMEOUT_SEC_,
+            Math.min(Session.JOIN_TIMEOUT_SEC_, Math.max(
+                Session.JOIN_START_TIMEOUT_MIN_SEC_,
+                Session.JOIN_START_ROUND_TRIPS_ * roundTripSeconds)));
+        fill.trackProperties = trackProperties;
+        fill.accepted.resolve(true);
+      } else {
+        // The Joining FETCH is answered either way, so its answer is what
+        // says whether there is anything to fill, not a missing
+        // LARGEST_OBJECT: relays have been seen to leave it out of the
+        // SUBSCRIBE_OK and then deliver from the middle of a Group all the
+        // same.
+        gate.expect(tail.largestObject || undefined,
+            shaka.msf.draft18.Session.JOIN_TIMEOUT_SEC_);
+        this.joinSubscription_(requestId, trackAlias.value, gate, description);
+      }
+    }
+
+    return trackAlias.value;
+  }
+
+  /**
+   * Sends the Joining FETCH that delivers a subscription's current Group from
+   * its first Object, which the subscription itself starts after.
+   *
+   * Nothing waits on it. It fails when nothing has been published on the
+   * track yet, and then the subscription delivers everything there is.
+   *
+   * @param {bigint} subscribeRequestId
+   * @param {bigint} trackAlias
+   * @param {!shaka.msf.JoinGate} gate
+   * @param {string} description
+   * @return {!Promise}
+   * @private
+   */
+  async joinSubscription_(subscribeRequestId, trackAlias, gate, description) {
+    const requestId = this.getNextRequestId_();
+    const writer = this.messageWriterFactory_();
+    writer.marshalJoiningFetch({
+      requestId,
+      joiningRequestId: subscribeRequestId,
+      joiningStart: BigInt(0),
+      params: [],
+    });
+    this.joiningFetches_.set(trackAlias, requestId);
+    try {
+      await this.sendFetch_(writer.getBytes(), requestId,
+          (obj) => gate.fromFill(obj), `joining fetch for ${description}`,
+          () => gate.open());
+    } catch (error) {
+      shaka.log.debug(`Joining fetch for ${description} failed:`, error);
+    }
+  }
+
+  /**
+   * Reads whatever is left of a message payload the caller stopped reading
+   * part way through.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @param {{type: number, length: number}} header
+   * @param {number} bytesConsumed
+   * @return {!Promise<!Uint8Array>}
+   * @private
+   */
+  readRest_(reader, header, bytesConsumed) {
+    const remaining = header.length - bytesConsumed;
+    if (remaining > 0) {
+      return reader.read(remaining);
+    }
+    return Promise.resolve(new Uint8Array([]));
+  }
+
+  /**
+   * Finds the Track Properties at the end of a SUBSCRIBE_OK or FETCH_OK
+   * payload, and the LARGEST_OBJECT parameter on the way. The Track
+   * Properties run to the end of the message with no length of their own, so
+   * they start wherever the Parameters before them end.
+   *
+   * Parameters are the obstacle: since draft-18 a Parameter's value is
+   * encoded however its type says, rather than by the parity rule Properties
+   * use, so an unknown type cannot be stepped over. Only EXPIRES and
+   * LARGEST_OBJECT may appear in these two responses at all; the others the
+   * message layer knows are stepped over too so that a lenient publisher
+   * costs us nothing.
+   *
+   * @param {!Uint8Array} payload
+   * @param {number} offset Where the fields still to be read begin.
+   * @param {number} leadingVarInts How many var int fields sit between the
+   *   offset and the Number of Parameters field.
+   * @param {string} description Used in log messages.
+   * @return {shaka.msf.draft18.Session.ResponseTail}
+   * @private
+   */
+  readResponseTail_(payload, offset, leadingVarInts, description) {
+    const codec = this.dialect_.getCodec();
+    /** @type {function(number):{value: bigint, bytesRead: number}} */
+    const readVi64At = (at) => shaka.msf.Utils.readVi64At(payload, at, codec);
+    const Encoding = shaka.msf.draft18.MessageWriter.ParameterEncoding;
+
+    /** @type {?shaka.msf.Utils.Location} */
+    let largestObject = null;
+
+    try {
+      for (let i = 0; i < leadingVarInts; i++) {
+        offset += readVi64At(offset).bytesRead;
+      }
+
+      const count = readVi64At(offset);
+      offset += count.bytesRead;
+
+      let type = 0;
+      for (let i = 0; i < Number(count.value); i++) {
+        const delta = readVi64At(offset);
+        offset += delta.bytesRead;
+        type += Number(delta.value);
+
+        switch (this.parameterFormat_.getParameterEncoding(type)) {
+          case Encoding.UINT8:
+            offset += 1;
+            break;
+          case Encoding.VARINT:
+            offset += readVi64At(offset).bytesRead;
+            break;
+          case Encoding.LOCATION: {
+            const group = readVi64At(offset);
+            offset += group.bytesRead;
+            const object = readVi64At(offset);
+            offset += object.bytesRead;
+            if (type == shaka.msf.draft18.Session.LARGEST_OBJECT_) {
+              largestObject = {group: group.value, object: object.value};
+            }
+            break;
+          }
+          case Encoding.LENGTH_PREFIXED: {
+            const length = readVi64At(offset);
+            offset += length.bytesRead + Number(length.value);
+            break;
+          }
+          case Encoding.LOCATION_FILTER: {
+            const filterType = readVi64At(offset);
+            offset += filterType.bytesRead;
+            const fields = shaka.msf.draft18.Session.LOCATION_FILTER_FIELDS_
+                .get(Number(filterType.value));
+            if (fields == null) {
+              throw new Error(
+                  `Unknown Location Filter Type ${filterType.value}`);
+            }
+            for (let j = 0; j < fields; j++) {
+              offset += readVi64At(offset).bytesRead;
+            }
+            break;
+          }
+          default:
+            shaka.log.warning(`${description}: cannot step over parameter ` +
+                `0x${type.toString(16)}, ignoring its Track Properties`);
+            return {largestObject: undefined, trackProperties: null};
+        }
+      }
+    } catch (error) {
+      shaka.log.warning(`${description}: malformed response, ignoring ` +
+          'its Track Properties', error);
+      return {largestObject: undefined, trackProperties: null};
+    }
+
+    return {
+      largestObject,
+      trackProperties:
+          offset < payload.byteLength ? payload.subarray(offset) : null,
+    };
+  }
+
+  /**
+   * Builds the parameter list carried by SUBSCRIBE. Draft-16 moved the
+   * subscriber priority, forward flag, filter and group order out of fixed
+   * fields into parameters, and draft-18 keeps them there. Every one of them
+   * has a default, so the shortest legal list is the empty one.
+   *
+   * @param {!shaka.msf.draft18.MessageWriter} writer The writer this
+   *   SUBSCRIBE is going out on, which owns how a start Location is encoded.
+   * @param {?shaka.msf.Utils.Location=} startLocation
+   * @return {!Array<shaka.msf.Utils.KeyValuePair>}
+   * @private
+   */
+  buildSubscribeParams_(writer, startLocation) {
+    const Parameter = shaka.msf.draft18.MessageWriter.Parameter;
+
+    // GROUP_ORDER is deliberately absent. Draft-16 carried the publisher's
+    // own order as the value 0 of a fixed field; as a parameter that value
+    // no longer exists, and omitting the parameter is what asks for the
+    // publisher's preference (draft-18 section 10.2.8). Sending 0 is a
+    // protocol violation, and a publisher that rejects the SUBSCRIBE for it
+    // answers nothing at all, so the subscription just hangs.
+    const params = [
+      {type: BigInt(Parameter.FORWARD), value: BigInt(1)},
+      {type: BigInt(Parameter.SUBSCRIBER_PRIORITY), value: BigInt(0)},
+    ];
+
+    // A start at the origin is what an unfiltered subscription already means
+    // in both drafts, so it is sent as no filter at all. That is not merely
+    // shorter: draft-20 reads two zeroed filter fields as the Next Object,
+    // which is a different request.
+    if (startLocation &&
+        (startLocation.group || startLocation.object)) {
+      params.push(writer.locationFilterParam(startLocation));
+    }
+
+    return params;
+  }
+
+  /**
+   * Keeps reading a subscription's request stream after the SUBSCRIBE_OK so
+   * that PUBLISH_DONE closes the track.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @param {bigint} trackAlias
+   * @return {!Promise}
+   * @private
+   */
+  async listenOnRequestStream_(reader, trackAlias) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      while (!(await reader.done())) {
+        // eslint-disable-next-line no-await-in-loop
+        const header = await this.readMessageHeader_(reader);
+        if (header.type == shaka.msf.draft18.MessageTypeId.PUBLISH_DONE) {
+          shaka.log.debug(`PUBLISH_DONE for track ${trackAlias}`);
+          const trackInfo =
+              this.trackRegistry_.getTrackInfoFromAlias(trackAlias);
+          if (trackInfo) {
+            trackInfo.closed = true;
+            this.trackRegistry_.unregisterAllCallbacks(trackAlias);
+          }
+          this.subscribeStreams_.delete(trackAlias);
+          this.trackProperties_.delete(trackAlias);
+          return;
+        }
+        // Anything else on this stream is not something we act on; skip its
+        // payload so the stream stays framed.
+        // eslint-disable-next-line no-await-in-loop
+        await reader.read(header.length);
+      }
+    } catch (error) {
+      if (!this.isClosing_) {
+        shaka.log.debug(
+            `Request stream for track ${trackAlias} ended:`, error);
+      }
+    } finally {
+      this.subscribeStreams_.delete(trackAlias);
+    }
+  }
+
+  /** @override */
+  unsubscribe(trackAlias) {
+    const trackInfo = this.trackRegistry_.getTrackInfoFromAlias(trackAlias);
+    if (!trackInfo) {
+      throw new Error(`Cannot unsubscribe: unknown alias ${trackAlias}`);
+    }
+
+    // Draft-17 removed the cancel messages: a subscriber withdraws by
+    // resetting the request's bidirectional stream, so there is no
+    // UNSUBSCRIBE to send. Dropping the callbacks only makes us stop
+    // listening; until the stream goes away the publisher keeps sending, and
+    // every object it sends spends deliver_'s full retry budget looking for a
+    // callback that is never coming back.
+    trackInfo.closed = true;
+    this.trackRegistry_.unregisterAllCallbacks(trackAlias);
+
+    // The Objects of the current Group may still be on their way on a fetch
+    // stream, which the registry knows nothing about.
+    this.forgetFetch_(trackInfo.requestId);
+    const joiningRequestId = this.joiningFetches_.get(trackAlias);
+    if (joiningRequestId != null) {
+      this.forgetFetch_(joiningRequestId);
+      this.joiningFetches_.delete(trackAlias);
+    }
+    this.joinGates_.get(trackAlias)?.release();
+    this.joinGates_.delete(trackAlias);
+
+    const request = this.subscribeStreams_.get(trackAlias);
+    this.subscribeStreams_.delete(trackAlias);
+    this.trackProperties_.delete(trackAlias);
+    shaka.log.debug(`Unsubscribed from track ${trackAlias}`);
+    if (!request) {
+      return Promise.resolve();
+    }
+    // Both halves go: cancelling our side of the reads is not what tells the
+    // publisher to stop, tearing down the request stream is. close() on
+    // either half swallows its own errors, so there is nothing to handle
+    // here.
+    return Promise.all([request.reader.close(), request.writer.close()]);
+  }
+
+  /** @override */
+  fetch(namespace, trackName, callback) {
+    const description = `fetch ${namespace.join('/')}:${trackName}`;
+    const requestId = this.getNextRequestId_();
+
+    // The range defaults to the Object at {0, 0}. Each draft in the family
+    // spells that range differently, so how it is written is left to the
+    // writer.
+    const writer = this.messageWriterFactory_();
+    writer.marshalFetch({
+      requestId,
+      namespace,
+      trackName,
+      startLocation: undefined,
+      endLocation: undefined,
+      params: [],
+    });
+
+    return this.sendFetch_(writer.getBytes(), requestId, callback, description);
+  }
+
+  /**
+   * Sends a FETCH and waits for its answer. The Objects arrive on a stream of
+   * their own, which handleFetchStream_ hands to the callback.
+   *
+   * @param {!Uint8Array} requestBytes
+   * @param {bigint} requestId
+   * @param {shaka.msf.Utils.ObjectCallback} callback
+   * @param {string} description
+   * @param {?function()=} onEnd Called once no more Objects will be handed
+   *   to the callback.
+   * @return {!Promise}
+   * @private
+   */
+  async sendFetch_(requestBytes, requestId, callback, description, onEnd) {
+    /** @type {shaka.msf.draft18.Session.PendingFetch} */
+    const pending = {
+      callback,
+      accepted: Promise.withResolvers(),
+      trackProperties: null,
+      onStart: null,
+      onEnd: onEnd || null,
+    };
+    this.fetches_.set(requestId, pending);
+
+    try {
+      const reader = (await this.openRequest_(requestBytes)).reader;
+      const header = await this.awaitResponse_(
+          reader, shaka.msf.draft18.MessageTypeId.FETCH_OK, description);
+      const payload = await this.readRest_(reader, header, 0);
+
+      // FETCH_OK: End Of Track (8) and End Location (Group, Object) come
+      // ahead of the Parameters and the Track Properties.
+      pending.trackProperties = this.readResponseTail_(
+          payload, /* offset= */ 1, /* leadingVarInts= */ 2, description)
+          .trackProperties;
+
+      shaka.log.debug(`${description} accepted`);
+      pending.accepted.resolve(true);
+    } catch (error) {
+      this.forgetFetch_(requestId);
+      pending.accepted.resolve(false);
+      throw error;
+    }
+  }
+
+  /**
+   * Stops handing on the Objects of a fetch, including the ones of a stream
+   * that is already being read.
+   *
+   * @param {bigint} requestId
+   * @private
+   */
+  forgetFetch_(requestId) {
+    const pending = this.fetches_.get(requestId);
+    if (pending) {
+      this.fetches_.delete(requestId);
+      pending.accepted.resolve(false);
+      pending.onEnd?.();
+    }
+  }
+
+  /** @override */
+  onNamespacePublished(callback) {
+    this.publishNamespaceCallbacks_.add(callback);
+    return () => {
+      this.publishNamespaceCallbacks_.delete(callback);
+    };
+  }
+
+  /**
+   * Reads incoming unidirectional streams. Each is either the peer's control
+   * stream, which begins with SETUP, or object data.
+   *
+   * @return {!Promise}
+   * @private
+   */
+  async startListeningForStreams_() {
+    try {
+      const streams =
+          this.webTransport_.incomingUnidirectionalStreams.getReader();
+
+      while (true) {
+        // eslint-disable-next-line no-await-in-loop
+        const {value: stream, done} = await streams.read();
+        if (done) {
+          return;
+        }
+
+        this.handleIncomingStream_(stream).catch((error) => {
+          this.logStreamFailure_('Error handling incoming stream', error);
+        });
+      }
+    } catch (error) {
+      this.logStreamFailure_('Stopped listening for incoming streams', error);
+    }
+  }
+
+  /**
+   * @param {!ReadableStream} stream
+   * @return {!Promise}
+   * @private
+   */
+  async handleIncomingStream_(stream) {
+    const reader = new shaka.msf.Reader(
+        new Uint8Array([]), stream, this.dialect_.getCodec());
+
+    try {
+      const streamType = await reader.u62();
+
+      if (streamType == BigInt(shaka.msf.draft18.MessageTypeId.SETUP)) {
+        await this.handlePeerControlStream_(reader);
+      } else if (this.isSubgroupStreamType_(streamType)) {
+        await this.handleSubgroupStream_(reader, streamType);
+      } else if (streamType == BigInt(shaka.msf.draft18.StreamType.FETCH)) {
+        await this.handleFetchStream_(reader);
+      } else {
+        shaka.log.warning(`Unknown stream type: ${streamType}`);
+      }
+    } catch (error) {
+      this.logStreamFailure_('Incoming stream ended', error);
+    } finally {
+      reader.close();
+    }
+  }
+
+  /**
+   * Streams end for reasons that are not a failure of ours: the peer resets
+   * one it no longer needs, and every stream on a session fails at once when
+   * the session goes away, which the session itself already reports. Neither
+   * is worth an error in the log.
+   *
+   * @param {string} context
+   * @param {*} error
+   * @private
+   */
+  logStreamFailure_(context, error) {
+    const isSessionGone = this.isClosing_ ||
+        (error && error['source'] == 'session');
+    if (isSessionGone) {
+      shaka.log.debug(`${context}:`, error);
+    } else {
+      shaka.log.warning(`${context}:`, error);
+    }
+  }
+
+  /**
+   * Reads the peer's SETUP and then keeps the control stream open for GOAWAY
+   * and namespace announcements.
+   *
+   * @param {!shaka.msf.Reader} reader Positioned just after the SETUP type.
+   * @return {!Promise}
+   * @private
+   */
+  async handlePeerControlStream_(reader) {
+    const lengthBytes = await reader.read(2);
+    const length = (lengthBytes[0] << 8) | lengthBytes[1];
+    // Setup Options span the payload; we do not need any of them yet.
+    await reader.read(length);
+    shaka.log.info(`Received peer SETUP (${this.dialect_.getName()})`);
+
+    // eslint-disable-next-line no-await-in-loop
+    while (!(await reader.done())) {
+      // eslint-disable-next-line no-await-in-loop
+      const header = await this.readMessageHeader_(reader);
+      // eslint-disable-next-line no-await-in-loop
+      const payload = await reader.read(header.length);
+
+      if (header.type == shaka.msf.draft18.MessageTypeId.GOAWAY) {
+        shaka.log.info('Received GOAWAY on the control stream');
+      } else {
+        shaka.log.debug(
+            `Ignoring control message type 0x${header.type.toString(16)} ` +
+            `(${payload.byteLength} bytes)`);
+      }
+    }
+  }
+
+  /**
+   * Draft-18 SUBGROUP_HEADER types have bit 4 set, spanning 0x10-0x1F,
+   * 0x30-0x3F, 0x50-0x5F and 0x70-0x7F.
+   *
+   * @param {bigint} streamType
+   * @return {boolean}
+   * @private
+   */
+  isSubgroupStreamType_(streamType) {
+    if (streamType > BigInt(0x7f)) {
+      return false;
+    }
+    return (streamType & BigInt(0x10)) != BigInt(0);
+  }
+
+  /**
+   * @param {!shaka.msf.Reader} reader
+   * @param {bigint} streamType
+   * @return {!Promise}
+   * @private
+   */
+  async handleSubgroupStream_(reader, streamType) {
+    const PROPERTIES_BIT = BigInt(0x01);
+    const SUBGROUP_ID_MODE_MASK = BigInt(0x06);
+    const DEFAULT_PRIORITY_BIT = BigInt(0x20);
+
+    const hasProperties = (streamType & PROPERTIES_BIT) != BigInt(0);
+    const subgroupIdMode =
+        (streamType & SUBGROUP_ID_MODE_MASK) >> BigInt(1);
+
+    if (subgroupIdMode == BigInt(0x03)) {
+      throw new Error(`Reserved SUBGROUP_ID_MODE in type ${streamType}`);
+    }
+
+    const trackAlias = await reader.u62();
+    const groupId = await reader.u62();
+
+    /** @type {?bigint} */
+    let subgroupId = null;
+    if (subgroupIdMode == BigInt(0x00)) {
+      subgroupId = BigInt(0);
+    } else if (subgroupIdMode == BigInt(0x02)) {
+      subgroupId = await reader.u62();
+    }
+    // Mode 0x01 leaves it as the first Object ID, filled in below.
+
+    if ((streamType & DEFAULT_PRIORITY_BIT) == BigInt(0)) {
+      await reader.u8(); // Publisher Priority, unused.
+    }
+
+    /** @type {bigint} */
+    let previousObjectId = BigInt(0);
+    let isFirstObject = true;
+
+    // eslint-disable-next-line no-await-in-loop
+    while (!(await reader.done())) {
+      const payloadReadStartMs = Date.now();
+
+      // Object IDs are delta encoded: the first is absolute, and each
+      // subsequent one is previous + delta + 1.
+      // eslint-disable-next-line no-await-in-loop
+      const objectIdDelta = await reader.u62();
+      const objectId = isFirstObject ?
+          objectIdDelta :
+          previousObjectId + objectIdDelta + BigInt(1);
+      previousObjectId = objectId;
+
+      if (isFirstObject && subgroupId === null) {
+        subgroupId = objectId;
+      }
+      isFirstObject = false;
+
+      /** @type {?Uint8Array} */
+      let properties = null;
+      if (hasProperties) {
+        // eslint-disable-next-line no-await-in-loop
+        const propertiesLength = await reader.u62();
+        if (propertiesLength > BigInt(0)) {
+          // eslint-disable-next-line no-await-in-loop
+          properties = await reader.read(Number(propertiesLength));
+        }
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      const payloadLength = await reader.u62();
+
+      /** @type {?bigint} */
+      let objectStatus = null;
+      if (payloadLength == BigInt(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        objectStatus = await reader.u62();
+      }
+
+      const data = payloadLength > BigInt(0) ?
+          // eslint-disable-next-line no-await-in-loop
+          await reader.read(Number(payloadLength)) :
+          new Uint8Array([]);
+
+      /** @type {shaka.msf.Utils.MOQObject} */
+      const obj = {
+        trackAlias,
+        location: {group: groupId, object: objectId, subgroup: subgroupId},
+        data,
+        extensions: properties,
+        status: objectStatus,
+        payloadReadStartMs,
+        receiveTimestampMs: Date.now(),
+      };
+
+      // eslint-disable-next-line no-await-in-loop
+      await this.deliver_(trackAlias, obj);
+    }
+  }
+
+  /**
+   * Delivers an object, waiting briefly for the subscription to be registered
+   * if the data stream beat the SUBSCRIBE_OK.
+   *
+   * @param {bigint} trackAlias
+   * @param {shaka.msf.Utils.MOQObject} obj
+   * @return {!Promise}
+   * @private
+   */
+  async deliver_(trackAlias, obj) {
+    const RETRY_INTERVAL = 0.1;
+    const MAX_RETRIES = 5;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (this.isClosing_) {
+        return;
+      }
+
+      const trackInfo = this.trackRegistry_.getTrackInfoFromAlias(trackAlias);
+      if (trackInfo?.closed) {
+        return;
+      }
+
+      if (trackInfo && trackInfo.callbacks.length) {
+        // Stamped here rather than when the Object was read: the data stream
+        // can beat the SUBSCRIBE_OK that carries them, which is what the wait
+        // below is for.
+        obj.trackProperties = this.trackProperties_.get(trackAlias) || null;
+        for (const callback of trackInfo.callbacks) {
+          try {
+            callback(obj);
+          } catch (error) {
+            shaka.log.error(`Error in object callback for ${trackAlias}:`,
+                error);
+          }
+        }
+        return;
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      await shaka.util.Functional.delay(RETRY_INTERVAL);
+    }
+
+    if (!this.isClosing_) {
+      shaka.log.warning(
+          `Dropping object for unregistered track ${trackAlias}`);
+    }
+  }
+
+  /**
+   * Reads a fetch stream: a FETCH_HEADER naming the request, then Objects
+   * until the stream ends. The request is a FETCH, or a SUBSCRIBE whose
+   * FILL_PARAMETERS asked for Groups already published.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @return {!Promise}
+   * @private
+   */
+  async handleFetchStream_(reader) {
+    const requestId = await reader.u62();
+    const pending = this.fetches_.get(requestId);
+    if (!pending) {
+      shaka.log.warning(`No callback for fetch requestId ${requestId}`);
+      return;
+    }
+    pending.onStart?.();
+    // Objects can arrive ahead of the FETCH_OK, and the Track Properties that
+    // say how to read them are in it.
+    if (!(await pending.accepted.promise)) {
+      return;
+    }
+
+    try {
+      await this.readFetchObjects_(reader, requestId, pending);
+    } finally {
+      if (this.fetches_.get(requestId) == pending) {
+        this.fetches_.delete(requestId);
+      }
+      pending.onEnd?.();
+    }
+  }
+
+  /**
+   * Reads the Objects of a fetch stream, past its FETCH_HEADER, and hands
+   * them to the fetch's callback until the stream ends or the fetch is
+   * withdrawn.
+   *
+   * @param {!shaka.msf.Reader} reader
+   * @param {bigint} requestId
+   * @param {shaka.msf.draft18.Session.PendingFetch} pending
+   * @return {!Promise}
+   * @private
+   */
+  async readFetchObjects_(reader, requestId, pending) {
+    const Flags = shaka.msf.draft18.Session.FetchFlags_;
+    const one = BigInt(1);
+
+    // Every field an Object leaves out is the prior Object's, and the first
+    // one has to spell out its Location (draft-18 section 11.4.4.1).
+    let priorGroup = BigInt(0);
+    let priorObject = BigInt(0);
+    let priorSubgroup = BigInt(0);
+    let hasPrior = false;
+
+    // eslint-disable-next-line no-await-in-loop
+    while (!(await reader.done())) {
+      if (this.fetches_.get(requestId) != pending) {
+        // Withdrawn while its Objects were still arriving.
+        return;
+      }
+
+      const payloadReadStartMs = Date.now();
+      // eslint-disable-next-line no-await-in-loop
+      const flags = Number(await reader.u62());
+
+      if (flags > Flags.MAX) {
+        // An End of Range: a Location, and nothing else, past which the
+        // Objects up to it do not exist, are unknown or timed out. Only the
+        // Location moves on.
+        if (!shaka.msf.draft18.Session.END_OF_RANGE_.includes(flags)) {
+          throw new Error(
+              `Invalid fetch Serialization Flags 0x${flags.toString(16)}`);
+        }
+        // eslint-disable-next-line no-await-in-loop
+        priorGroup = await reader.u62();
+        // eslint-disable-next-line no-await-in-loop
+        priorObject = await reader.u62();
+        hasPrior = true;
+        continue;
+      }
+
+      const hasGroupDelta = (flags & Flags.GROUP_ID_DELTA) != 0;
+      const hasObjectDelta = (flags & Flags.OBJECT_ID_DELTA) != 0;
+      if (!hasPrior && (!hasGroupDelta || !hasObjectDelta)) {
+        throw new Error('The first fetched Object has no Location');
+      }
+
+      let groupId = priorGroup;
+      if (hasGroupDelta) {
+        // eslint-disable-next-line no-await-in-loop
+        const delta = await reader.u62();
+        // Ascending, which is the only order this player asks for.
+        groupId = hasPrior ? priorGroup + delta + one : delta;
+      }
+
+      let subgroupId = BigInt(0);
+      if (!(flags & Flags.DATAGRAM)) {
+        switch (flags & Flags.SUBGROUP_MASK) {
+          case Flags.SUBGROUP_PRIOR:
+            subgroupId = priorSubgroup;
+            break;
+          case Flags.SUBGROUP_PRIOR_PLUS_ONE:
+            subgroupId = priorSubgroup + one;
+            break;
+          case Flags.SUBGROUP_PRESENT:
+            // eslint-disable-next-line no-await-in-loop
+            subgroupId = await reader.u62();
+            break;
+        }
+      }
+
+      let objectId = priorObject + one;
+      if (hasObjectDelta) {
+        // eslint-disable-next-line no-await-in-loop
+        const delta = await reader.u62();
+        // A new Group numbers its Objects afresh, so the delta is the ID
+        // itself; within a Group it is added to the prior ID as it is.
+        objectId = hasGroupDelta ? delta : priorObject + delta;
+      }
+
+      if (flags & Flags.PRIORITY) {
+        // eslint-disable-next-line no-await-in-loop
+        await reader.u8(); // Publisher Priority, unused.
+      }
+
+      /** @type {?Uint8Array} */
+      let properties = null;
+      if (flags & Flags.PROPERTIES) {
+        // eslint-disable-next-line no-await-in-loop
+        const propertiesLength = await reader.u62();
+        if (propertiesLength > BigInt(0)) {
+          // eslint-disable-next-line no-await-in-loop
+          properties = await reader.read(Number(propertiesLength));
+        }
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      const payloadLength = await reader.u62();
+      const data = payloadLength > BigInt(0) ?
+          // eslint-disable-next-line no-await-in-loop
+          await reader.read(Number(payloadLength)) :
+          new Uint8Array([]);
+
+      priorGroup = groupId;
+      priorObject = objectId;
+      priorSubgroup = subgroupId;
+      hasPrior = true;
+
+      if (this.fetches_.get(requestId) != pending) {
+        return;
+      }
+      pending.callback({
+        trackAlias: BigInt(0),
+        location: {group: groupId, object: objectId, subgroup: subgroupId},
+        data,
+        extensions: properties,
+        trackProperties: pending.trackProperties,
+        status: null,
+        payloadReadStartMs,
+        receiveTimestampMs: Date.now(),
+      });
+    }
+  }
+
+  /** @override */
+  async close(code = 0, reason = '') {
+    this.isClosing_ = true;
+    try {
+      this.webTransport_.close({closeCode: code, reason});
+      await this.webTransport_.closed;
+    } catch (error) {
+      // The session may already be closed, either because the peer went away
+      // or because we are closing twice. Either way it is gone, which is all
+      // the caller wanted.
+      shaka.log.debug('Ignoring error while closing the session:', error);
+    }
+  }
+
+  /** @override */
+  release() {
+    shaka.log.debug(`Releasing ${this.dialect_.getName()} session`);
+    this.isClosing_ = true;
+    this.publishNamespaceCallbacks_.clear();
+    for (const pending of this.fetches_.values()) {
+      pending.accepted.resolve(false);
+    }
+    this.fetches_.clear();
+    this.joiningFetches_.clear();
+    for (const gate of this.joinGates_.values()) {
+      gate.release();
+    }
+    this.joinGates_.clear();
+    this.trackProperties_.clear();
+    this.trackRegistry_.clear();
+  }
+};
+
+
+/**
+ * Unidirectional stream types that are not control streams.
+ *
+ * @enum {number}
+ */
+shaka.msf.draft18.StreamType = {
+  FETCH: 0x05,
+};
+
+
+/**
+ * The Serialization Flags of an Object on a fetch stream (draft-18 section
+ * 11.4.4.1; draft-20 and draft-21 are the same).
+ *
+ * @enum {number}
+ * @private
+ */
+shaka.msf.draft18.Session.FetchFlags_ = {
+  SUBGROUP_MASK: 0x03,
+  SUBGROUP_ZERO: 0x00,
+  SUBGROUP_PRIOR: 0x01,
+  SUBGROUP_PRIOR_PLUS_ONE: 0x02,
+  SUBGROUP_PRESENT: 0x03,
+  OBJECT_ID_DELTA: 0x04,
+  GROUP_ID_DELTA: 0x08,
+  PRIORITY: 0x10,
+  PROPERTIES: 0x20,
+  DATAGRAM: 0x40,
+  // Anything above this is not a set of flags but an End of Range.
+  MAX: 0x7f,
+};
+
+
+/**
+ * The Serialization Flags values that mark an End of Range: Objects that do
+ * not exist, whose status is unknown, and (from draft-20) that timed out.
+ *
+ * @private @const {!Array<number>}
+ */
+shaka.msf.draft18.Session.END_OF_RANGE_ = [0x8c, 0x10c, 0x20c];
+
+
+/**
+ * @typedef {{
+ *   callback: shaka.msf.Utils.ObjectCallback,
+ *   accepted: !Promise.PromiseWithResolvers<boolean>,
+ *   trackProperties: ?Uint8Array,
+ *   onStart: ?function(),
+ *   onEnd: ?function(),
+ * }}
+ *
+ * @property {shaka.msf.Utils.ObjectCallback} callback
+ *   Receives the fetched Objects.
+ * @property {!Promise.PromiseWithResolvers<boolean>} accepted
+ *   Resolves with true on FETCH_OK and with false when the fetch fails or the
+ *   session is released. It never rejects, so nothing waiting on it can leave
+ *   a rejection unhandled.
+ * @property {?Uint8Array} trackProperties
+ *   The Track Properties of the FETCH_OK, once it has arrived.
+ * @property {?function()} onStart
+ *   Called when a stream with the fetch's Objects shows up.
+ * @property {?function()} onEnd
+ *   Called once no more Objects will be handed to the callback: the fetch
+ *   stream has ended or failed, or the fetch has been refused or withdrawn.
+ */
+shaka.msf.draft18.Session.PendingFetch;
+
+
+/**
+ * @typedef {{
+ *   largestObject: (?shaka.msf.Utils.Location|undefined),
+ *   trackProperties: ?Uint8Array,
+ * }}
+ *
+ * @property {(?shaka.msf.Utils.Location|undefined)} largestObject
+ *   The LARGEST_OBJECT parameter; null when the response has none, which
+ *   means nothing has been published on the track, and undefined when the
+ *   parameters could not be read.
+ * @property {?Uint8Array} trackProperties
+ *   The Track Properties block, or null when it is empty or cannot be
+ *   located.
+ */
+shaka.msf.draft18.Session.ResponseTail;
+
+
+/**
+ * The LARGEST_OBJECT Message Parameter type.
+ *
+ * @private @const {number}
+ */
+shaka.msf.draft18.Session.LARGEST_OBJECT_ = 0x09;
+
+
+/**
+ * How long a subscription that joins the current Group holds its own Objects
+ * back waiting for that Group, in seconds. Only a publisher that ignores the
+ * request runs into it.
+ *
+ * @private @const {number}
+ */
+shaka.msf.draft18.Session.JOIN_TIMEOUT_SEC_ = 2;
+
+
+/**
+ * How many SUBSCRIBE round trips a subscription that joins the current Group
+ * waits for the fill fetch stream to show up, and the least it waits, in
+ * seconds. The SUBSCRIBE round trip includes whatever a relay spent asking
+ * upstream, which a fill that the relay has to fetch upstream costs too.
+ *
+ * @private @const {number}
+ */
+shaka.msf.draft18.Session.JOIN_START_ROUND_TRIPS_ = 2;
+
+
+/** @private @const {number} */
+shaka.msf.draft18.Session.JOIN_START_TIMEOUT_MIN_SEC_ = 0.5;
+
+
+/**
+ * How many var ints follow each draft-22 Location Filter Type (draft-22
+ * section 9.20.9): none for None (0x00) and Next Object (0x05), and for the
+ * rest as many as the type's own value.
+ *
+ * @private @const {!Map<number, number>}
+ */
+shaka.msf.draft18.Session.LOCATION_FILTER_FIELDS_ = new Map([
+  [0x00, 0],
+  [0x01, 1],
+  [0x02, 2],
+  [0x03, 3],
+  [0x04, 4],
+  [0x05, 0],
+]);

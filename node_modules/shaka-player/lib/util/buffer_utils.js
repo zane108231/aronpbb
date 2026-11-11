@@ -1,0 +1,185 @@
+/*! @license
+ * Shaka Player
+ * Copyright 2016 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+goog.provide('shaka.util.BufferUtils');
+
+
+/**
+ * @summary A set of BufferSource utility functions.
+ * @export
+ */
+shaka.util.BufferUtils = class {
+  /**
+   * Compare two buffers for equality.  For buffers of different types, this
+   * compares the underlying buffers as binary data.
+   *
+   * @param {?BufferSource} arr1
+   * @param {?BufferSource} arr2
+   * @return {boolean}
+   * @export
+   * @suppress {strictMissingProperties}
+   */
+  static equal(arr1, arr2) {
+    const BufferUtils = shaka.util.BufferUtils;
+    if (arr1 === arr2 || (!arr1 && !arr2)) {
+      return true;
+    }
+    if (!arr1 || !arr2) {
+      return false;
+    }
+    if (arr1.byteLength !== arr2.byteLength) {
+      return false;
+    }
+
+    const arrayBufferA = BufferUtils.unsafeGetArrayBuffer_(arr1);
+    const arrayBufferB = BufferUtils.unsafeGetArrayBuffer_(arr2);
+    const byteOffsetA = arr1.byteOffset ?? 0;
+    const byteOffsetB = arr2.byteOffset ?? 0;
+
+    // Quickly check if these are views of the same buffer.
+    if (byteOffsetA === byteOffsetB && arrayBufferA == arrayBufferB) {
+      return true;
+    }
+
+    // Use DataView to speed up large buffers comparison.
+    const viewA = new DataView(arrayBufferA, byteOffsetA);
+    const viewB = new DataView(arrayBufferB, byteOffsetB);
+    const chunkSize = 4;
+    const numChunks = Math.floor(arr1.byteLength / chunkSize);
+
+    for (let i = 0; i < numChunks; ++i) {
+      if (viewA.getUint32(i * chunkSize) !== viewB.getUint32(i * chunkSize)) {
+        return false;
+      }
+    }
+    // Use traditional byte by byte comparison for remaining data in a buffer.
+    for (let i = numChunks * chunkSize; i < arr1.byteLength; ++i) {
+      if (viewA.getUint8(i) !== viewB.getUint8(i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Gets the underlying ArrayBuffer of the given view.  The caller needs to
+   * ensure it uses the "byteOffset" and "byteLength" fields of the view to
+   * only use the same "view" of the data.
+   *
+   * @param {BufferSource} view
+   * @return {!ArrayBuffer}
+   * @private
+   */
+  static unsafeGetArrayBuffer_(view) {
+    if (!ArrayBuffer.isView(view)) {
+      return /** @type {!ArrayBuffer} */(view);
+    } else {
+      return /** @type {!ArrayBufferView} */(view).buffer;
+    }
+  }
+
+  /**
+   * Gets an ArrayBuffer that contains the data from the given TypedArray.  Note
+   * this will allocate a new ArrayBuffer if the object is a partial view of
+   * the data.
+   *
+   * @param {!BufferSource} view
+   * @return {!ArrayBuffer}
+   * @export
+   */
+  static toArrayBuffer(view) {
+    if (!ArrayBuffer.isView(view)) {
+      return /** @type {!ArrayBuffer} */(view);
+    } else {
+      const aView = /** @type {!ArrayBufferView} */(view);
+      if (aView.byteOffset == 0 &&
+          aView.byteLength == aView.buffer.byteLength) {
+        // This is a TypedArray over the whole buffer.
+        return aView.buffer;
+      }
+      // This is a "view" on the buffer.  Create a new buffer that only contains
+      // the data.  Note that since this isn't an ArrayBuffer, the "new" call
+      // will allocate a new buffer to hold the copy.
+      return new Uint8Array(aView).buffer;
+    }
+  }
+
+  /**
+   * Creates a new Uint8Array view on the same buffer.  This clamps the values
+   * to be within the same view (i.e. you can't use this to move past the end
+   * of the view, even if the underlying buffer is larger).  However, you can
+   * pass a negative offset to access the data before the view.
+   *
+   * @param {BufferSource} data
+   * @param {number=} offset The offset from the beginning of this data's view
+   *   to start the new view at.
+   * @param {number=} length The byte length of the new view.
+   * @return {!Uint8Array}
+   * @export
+   */
+  static toUint8(data, offset = 0, length = Infinity) {
+    return shaka.util.BufferUtils.view_(data, offset, length, Uint8Array);
+  }
+
+  /**
+   * Creates a new Uint16Array view on the same buffer.  This clamps the values
+   * to be within the same view (i.e. you can't use this to move past the end
+   * of the view, even if the underlying buffer is larger).  However, you can
+   * pass a negative offset to access the data before the view.
+   *
+   * @param {BufferSource} data
+   * @param {number=} offset The offset from the beginning of this data's view
+   *   to start the new view at.
+   * @param {number=} length The byte length of the new view.
+   * @return {!Uint16Array}
+   * @export
+   */
+  static toUint16(data, offset = 0, length = Infinity) {
+    return shaka.util.BufferUtils.view_(data, offset, length, Uint16Array);
+  }
+
+  /**
+   * Creates a DataView over the given buffer.
+   *
+   * @see toUint8
+   * @param {BufferSource} buffer
+   * @param {number=} offset
+   * @param {number=} length
+   * @return {!DataView}
+   * @export
+   */
+  static toDataView(buffer, offset = 0, length = Infinity) {
+    return shaka.util.BufferUtils.view_(buffer, offset, length, DataView);
+  }
+
+  /**
+   * @param {BufferSource} data
+   * @param {number} offset
+   * @param {number} length
+   * @param {function(new:T, ArrayBuffer, number, number)} Type
+   * @return {!T}
+   * @template T
+   * @private
+   */
+  static view_(data, offset, length, Type) {
+    const buffer = shaka.util.BufferUtils.unsafeGetArrayBuffer_(data);
+    let bytesPerElement = 1;
+    if ('BYTES_PER_ELEMENT' in Type) {
+      bytesPerElement = Type.BYTES_PER_ELEMENT;
+    }
+    // Absolute end of the |data| view within |buffer|.
+    /** @suppress {strictMissingProperties} */
+    const dataEnd = ((data.byteOffset || 0) + data.byteLength) /
+      bytesPerElement;
+    // Absolute start of the result within |buffer|.
+    /** @suppress {strictMissingProperties} */
+    const rawStart = ((data.byteOffset || 0) + offset) / bytesPerElement;
+    const start = Math.floor(Math.max(0, Math.min(rawStart, dataEnd)));
+    // Absolute end of the result within |buffer|.
+    const end = Math.floor(Math.min(start + Math.max(length, 0), dataEnd));
+    return new Type(buffer, start, end - start);
+  }
+};

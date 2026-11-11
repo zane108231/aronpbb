@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/css/style.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/shaka-player@4.16.12/dist/shaka-player.compiled.js"></script>
+    <script defer src="/vendor/shaka-player/shaka-player.compiled.js"></script>
     <script defer src="/js/app.js"></script>
   </head>
   <body>
@@ -41,7 +41,7 @@
             <span class="connection-label" id="connection-label">NO FEED CONNECTED</span>
           </div>
 
-          <div class="stage stage--grid" id="stage" aria-label="Stream viewing area">
+          <div class="stage stage--single" id="stage" aria-label="Stream viewing area">
             <article class="feed-tile" data-feed-id="all">
               <div class="tile-video-wrap">
                 <video id="video-all" playsinline muted preload="none" aria-label="PBB All Access video"></video>
@@ -123,10 +123,11 @@
               <button class="text-control" id="reset-zoom-button" type="button">Reset</button>
             </div>
             <div class="view-controls" aria-label="Stage layout">
-              <button class="layout-button is-active" id="four-view-button" type="button" aria-pressed="true">4-view</button>
-              <button class="layout-button" id="single-view-button" type="button" aria-pressed="false">1-view</button>
+              <button class="layout-button" id="four-view-button" type="button" aria-pressed="false">4-view</button>
+              <button class="layout-button is-active" id="single-view-button" type="button" aria-pressed="true">1-view</button>
             </div>
             <button class="layout-button pip-button" id="pip-button" type="button">PIP</button>
+            <button class="layout-button fullscreen-button" id="fullscreen-button" type="button" aria-pressed="false">Full</button>
           </section>
 
           <p class="safety-note">Connect only to streams you are authorized to view. This dashboard does not store access tokens or configure DRM keys.</p>
@@ -197,5 +198,17 @@
         </div>
       </form>
     </dialog>
+
+    <div class="site-loader" id="site-loader" role="status" aria-live="polite">
+      <div class="loader-panel">
+        <img class="loader-image" src="/aron.jpg" alt="Aron" decoding="async">
+        <p class="loader-status" id="loader-status">Initializing Studio..</p>
+        <div class="loader-progress" id="loader-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span class="loader-progress-bar" id="loader-progress-bar"></span>
+        </div>
+        <span class="loader-progress-text" id="loader-progress-text">0%</span>
+        <button class="loader-enter" id="loader-enter-button" type="button" hidden>Enter BAHAY NI ARON</button>
+      </div>
+    </div>
   </body>
 </html>

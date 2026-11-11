@@ -1,0 +1,150 @@
+/*!
+ * @license
+ * The tooltip is based on https://github.com/felipefialho/css-components/
+ * Local modifications have been performed.
+ *
+ * Copyright (c) 2017 Felipe Fialho
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/* .shaka-tooltips-on enables the tooltips on control panels and big buttons
+ * when the 'enableTooltips' option is set to true. */
+.shaka-tooltips-on {
+  overflow: visible;
+
+  & > .shaka-tooltip,
+  & > .shaka-tooltip-status {
+    position: relative;
+
+    /* The :after pseudo-element contains the tooltip */
+    &::after {
+      content: attr(aria-label);
+      visibility: hidden;
+
+      /* Keep the tooltip for a moment after the pointer leaves the button, so
+       * the pointer can cross the gap and move over it (WCAG 1.4.13). A
+       * bridge over the gap would cover the seek bar. */
+      transition: visibility 0s linear 0.3s;
+      line-height: 1.2;
+      white-space: nowrap;
+      font-size: var(--shaka-font-size);
+
+      /* Styling */
+      background: var(--shaka-bg);
+      color: var(--shaka-font-color);
+      border-radius: 2px;
+      padding: 2px 10px;
+
+      /* Positioning */
+      position: absolute;
+      bottom: calc(var(--shaka-icon-size) + 14px);
+
+      /* Left attribute is set to half of the width of the parent button */
+      left: calc(var(--shaka-icon-size) / 2);
+
+      /* The tooltip is also translated 50% to appear centered */
+      transform: translateX(-50%);
+
+      @media (prefers-reduced-transparency) {
+        background-color: var(--shaka-bg-90);
+      }
+    }
+
+    &:hover::after,
+    &:focus-visible::after,
+    &:active::after {
+      visibility: visible;
+      transition-delay: 0s;
+    }
+  }
+
+  // If the seekbar is missing, this is positioned lower.
+  &.shaka-tooltips-bottom {
+    & > .shaka-tooltip {
+      &::after {
+        bottom: calc(var(--shaka-icon-size) / 2 * -1);
+      }
+    }
+  }
+
+  // If the seekbar is missing, this is positioned lower.
+  &.shaka-tooltips-low-position {
+    & > .shaka-tooltip {
+      &::after {
+        bottom: var(--shaka-icon-size);
+      }
+    }
+  }
+
+  /* Adds an additional attribute for the status in .shaka-tooltip-status */
+  & > .shaka-tooltip-status {
+    &::after {
+      content: attr(aria-label) " (" attr(shaka-status) ")";
+    }
+  }
+
+  &.shaka-big-buttons-container {
+    & > .shaka-tooltip,
+    & > .shaka-tooltip-status {
+      &::after {
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+    }
+  }
+
+  &.shaka-controls-button-panel,
+  &.shaka-controls-top-button-panel {
+    /* Moving to another button of the panel hides the tooltip right away. */
+    &:hover > .shaka-tooltip:not(:hover),
+    &:hover > .shaka-tooltip-status:not(:hover) {
+      &::after {
+        transition-delay: 0s;
+      }
+    }
+
+    /* Keep the first and last tooltips inside the control panel. */
+    & > button:first-child {
+      &::after {
+        left: 0;
+        transform: translateX(0);
+      }
+    }
+
+    & > button:last-child {
+      &::after {
+        left: var(--shaka-icon-size);
+        transform: translateX(-100%);
+      }
+    }
+  }
+}
+
+/* Escape hides the tooltips until the pointer or the focus moves (WCAG 1.4.13).
+ * The class is set on .shaka-controls-container by Controls. */
+.shaka-tooltips-dismissed .shaka-tooltips-on {
+  & > .shaka-tooltip,
+  & > .shaka-tooltip-status {
+    &::after {
+      display: none;
+    }
+  }
+}

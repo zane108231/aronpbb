@@ -42,6 +42,12 @@ const manifestInput = document.querySelector('#manifest-url');
 const sourceError = document.querySelector('#source-error');
 const appMessage = document.querySelector('#app-message');
 const qualitySelect = document.querySelector('#quality-select');
+const siteLoader = document.querySelector('#site-loader');
+const loaderProgress = document.querySelector('#loader-progress');
+const loaderProgressBar = document.querySelector('#loader-progress-bar');
+const loaderProgressText = document.querySelector('#loader-progress-text');
+const loaderEnterButton = document.querySelector('#loader-enter-button');
+const fullscreenButton = document.querySelector('#fullscreen-button');
 let selectedFeedId = 'all';
 let pendingFeedId = null;
 let zoom = 1;
@@ -77,6 +83,8 @@ document.querySelector('#zoom-in-button').addEventListener('click', () => setZoo
 document.querySelector('#zoom-out-button').addEventListener('click', () => setZoom(zoom - 0.1));
 document.querySelector('#reset-zoom-button').addEventListener('click', () => setZoom(1));
 document.querySelector('#pip-button').addEventListener('click', togglePictureInPicture);
+document.querySelector('#fullscreen-button').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', updateFullscreenButton);
 document.querySelector('#clean-view-button').addEventListener('click', toggleCleanView);
 document.querySelector('#close-dialog-button').addEventListener('click', closeSourceDialog);
 document.querySelector('#cancel-dialog-button').addEventListener('click', closeSourceDialog);
@@ -84,6 +92,7 @@ sourceForm.addEventListener('submit', connectFeed);
 qualitySelect.addEventListener('change', changeQuality);
 
 selectFeed(selectedFeedId);
+initializeLoader();
 document.addEventListener('DOMContentLoaded', initializeBuiltInStreams, { once: true });
 
 function initializeBuiltInStreams() {
@@ -192,10 +201,11 @@ async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
     state.video.muted = true;
     await state.player.load(manifestUrl.href);
     state.active = true;
-    state.video.controls = true;
+    state.video.controls = false;
     emptyState.hidden = true;
     status.textContent = 'CONNECTED';
     status.classList.add('is-live');
+    updateFeedSidebar();
     button.textContent = 'Change feed';
     if (activateFeed || feedId === selectedFeedId) {
       selectFeed(feedId);
@@ -338,6 +348,35 @@ async function togglePictureInPicture() {
   }
 }
 
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    const state = feedState.get(selectedFeedId);
+    if (!state.active) {
+      showMessage('Wait for the selected feed to load before using fullscreen.');
+      return;
+    }
+
+    if (state.tile.requestFullscreen) {
+      await state.tile.requestFullscreen();
+    } else {
+      showMessage('Fullscreen is not supported by this browser.');
+    }
+  } catch (error) {
+    showMessage(`Could not toggle fullscreen: ${error.message}`);
+  }
+}
+
+function updateFullscreenButton() {
+  const isFullscreen = Boolean(document.fullscreenElement);
+  fullscreenButton.textContent = isFullscreen ? 'Exit full' : 'Full';
+  fullscreenButton.setAttribute('aria-pressed', String(isFullscreen));
+}
+
 function toggleCleanView() {
   const cleanView = document.body.classList.toggle('clean-view');
   document.querySelector('#clean-view-button').setAttribute('aria-pressed', String(cleanView));
@@ -382,10 +421,67 @@ function changeQuality() {
   }
 
   state.player.configure('abr.enabled', false);
-  const track = state.player.getVariantTracks().find((item) => item.height === Number(selectedHeight));
+  const track = state.player.getVariantTracks()
+    .filter((item) => item.height === Number(selectedHeight))
+    .sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0];
   if (track) {
     state.player.selectVariantTrack(track, true);
   }
+}
+
+function initializeLoader() {
+  if (!siteLoader || !loaderProgress || !loaderProgressBar || !loaderProgressText || !loaderEnterButton) {
+    return;
+  }
+
+  const startedAt = performance.now();
+  const minimumDuration = 2400;
+  const maximumDuration = 10000;
+  let displayedProgress = 0;
+
+  const tick = () => {
+    const elapsed = performance.now() - startedAt;
+    const settledCount = feeds.filter((feed) => {
+      const state = feedState.get(feed.id);
+      return state.active || state.tile.querySelector('.tile-state').textContent === 'ERROR';
+    }).length;
+    const settledFraction = settledCount / feeds.length;
+    const timeFraction = Math.min(1, elapsed / minimumDuration);
+    const targetProgress = Math.min(0.95, Math.max(timeFraction * 0.95, settledFraction * 0.95));
+    displayedProgress += (targetProgress - displayedProgress) * 0.1;
+    if (Math.abs(targetProgress - displayedProgress) < 0.002) {
+      displayedProgress = targetProgress;
+    }
+    setLoaderProgress(displayedProgress);
+
+    if ((elapsed >= minimumDuration && settledCount === feeds.length) || elapsed >= maximumDuration) {
+      completeLoader();
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+
+  requestAnimationFrame(tick);
+  loaderEnterButton.addEventListener('click', () => {
+    setLayout('single');
+    siteLoader.classList.add('is-leaving');
+    window.setTimeout(() => {
+      siteLoader.hidden = true;
+    }, 460);
+  }, { once: true });
+}
+
+function setLoaderProgress(value) {
+  const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
+  loaderProgressBar.style.width = `${percent}%`;
+  loaderProgressText.textContent = `${percent}%`;
+  loaderProgress.setAttribute('aria-valuenow', String(percent));
+}
+
+function completeLoader() {
+  setLoaderProgress(100);
+  siteLoader.classList.add('is-complete');
+  loaderEnterButton.hidden = false;
 }
 
 function showMessage(message) {
