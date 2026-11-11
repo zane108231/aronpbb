@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0a10">
+    <title>PBB Jiyu</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/shaka-player@4.16.12/dist/shaka-player.compiled.js"></script>
+    <script defer src="/js/app.js"></script>
+  </head>
+  <body>
+    <div class="side-art side-art--left" aria-hidden="true">
+      <img src="/aron.jpg" alt="" loading="lazy">
+    </div>
+    <div class="side-art side-art--right" aria-hidden="true">
+      <img src="/aron.jpg" alt="" loading="lazy">
+    </div>
+    <div class="app-shell" id="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="PBB All Access Live home">
+          <span class="brand-mark" aria-hidden="true">P</span>
+          <span>PBB <span class="brand-light">NI JIYU</span></span>
+        </a>
+        <div class="live-status"><span class="live-pulse" aria-hidden="true"></span> LIVE DASHBOARD</div>
+        <nav class="header-actions" aria-label="Dashboard controls">
+          <button class="header-button" id="clean-view-button" type="button" aria-pressed="false">Clean view</button>
+        </nav>
+      </header>
+
+      <main class="dashboard">
+        <section class="view-column" aria-label="Live feed viewer">
+          <div class="stage-heading">
+            <div>
+              <p class="eyebrow">LIVE CAMERAS</p>
+              <h1 id="selected-feed-title">All Access</h1>
+            </div>
+            <span class="connection-label" id="connection-label">NO FEED CONNECTED</span>
+          </div>
+
+          <div class="stage stage--grid" id="stage" aria-label="Stream viewing area">
+            <article class="feed-tile" data-feed-id="all">
+              <div class="tile-video-wrap">
+                <video id="video-all" playsinline muted preload="none" aria-label="PBB All Access video"></video>
+                <div class="video-empty">
+                  <span class="play-glyph" aria-hidden="true">▶</span>
+                  <span>Connect an authorized feed</span>
+                </div>
+                <span class="tile-name">PBB All Access</span>
+                <span class="tile-state">READY</span>
+                <button class="audio-button" type="button" data-audio-id="all" aria-pressed="false" aria-label="Unmute PBB All Access">Unmute</button>
+              </div>
+              <div class="tile-actions">
+                <span class="tile-hint">Authorized HTTPS manifest</span>
+                <button class="connect-button" type="button" data-connect-id="all">Connect feed</button>
+              </div>
+            </article>
+            <article class="feed-tile" data-feed-id="ext">
+              <div class="tile-video-wrap">
+                <video id="video-ext" playsinline muted preload="none" aria-label="PBB External Den video"></video>
+                <div class="video-empty">
+                  <span class="play-glyph" aria-hidden="true">▶</span>
+                  <span>Connect an authorized feed</span>
+                </div>
+                <span class="tile-name">PBB External Den</span>
+                <span class="tile-state">READY</span>
+                <button class="audio-button" type="button" data-audio-id="ext" aria-pressed="false" aria-label="Unmute PBB External Den">Unmute</button>
+              </div>
+              <div class="tile-actions">
+                <span class="tile-hint">Authorized HTTPS manifest</span>
+                <button class="connect-button" type="button" data-connect-id="ext">Connect feed</button>
+              </div>
+            </article>
+            <article class="feed-tile" data-feed-id="din">
+              <div class="tile-video-wrap">
+                <video id="video-din" playsinline muted preload="none" aria-label="PBB Dining Area video"></video>
+                <div class="video-empty">
+                  <span class="play-glyph" aria-hidden="true">▶</span>
+                  <span>Connect an authorized feed</span>
+                </div>
+                <span class="tile-name">PBB Dining Area</span>
+                <span class="tile-state">READY</span>
+                <button class="audio-button" type="button" data-audio-id="din" aria-pressed="false" aria-label="Unmute PBB Dining Area">Unmute</button>
+              </div>
+              <div class="tile-actions">
+                <span class="tile-hint">Authorized HTTPS manifest</span>
+                <button class="connect-button" type="button" data-connect-id="din">Connect feed</button>
+              </div>
+            </article>
+            <article class="feed-tile" data-feed-id="main">
+              <div class="tile-video-wrap">
+                <video id="video-main" playsinline muted preload="none" aria-label="PBB Main Live video"></video>
+                <div class="video-empty">
+                  <span class="play-glyph" aria-hidden="true">▶</span>
+                  <span>Connect an authorized feed</span>
+                </div>
+                <span class="tile-name">PBB Main Live</span>
+                <span class="tile-state">READY</span>
+                <button class="audio-button" type="button" data-audio-id="main" aria-pressed="false" aria-label="Unmute PBB Main Live">Unmute</button>
+              </div>
+              <div class="tile-actions">
+                <span class="tile-hint">Authorized HTTPS manifest</span>
+                <button class="connect-button" type="button" data-connect-id="main">Connect feed</button>
+              </div>
+            </article>
+          </div>
+
+          <section class="control-bar" aria-label="Player controls">
+            <label class="quality-control" for="quality-select">
+              <span>QUALITY</span>
+              <select id="quality-select" aria-label="Video quality">
+                <option value="auto">Auto</option>
+              </select>
+            </label>
+            <div class="control-divider" aria-hidden="true"></div>
+            <div class="zoom-controls" aria-label="Zoom controls">
+              <button class="icon-button" id="zoom-out-button" type="button" aria-label="Zoom out">−</button>
+              <span class="zoom-value" id="zoom-value">100%</span>
+              <button class="icon-button" id="zoom-in-button" type="button" aria-label="Zoom in">+</button>
+              <button class="text-control" id="reset-zoom-button" type="button">Reset</button>
+            </div>
+            <div class="view-controls" aria-label="Stage layout">
+              <button class="layout-button is-active" id="four-view-button" type="button" aria-pressed="true">4-view</button>
+              <button class="layout-button" id="single-view-button" type="button" aria-pressed="false">1-view</button>
+            </div>
+            <button class="layout-button pip-button" id="pip-button" type="button">PIP</button>
+          </section>
+
+          <p class="safety-note">Connect only to streams you are authorized to view. This dashboard does not store access tokens or configure DRM keys.</p>
+          <p class="app-message" id="app-message" role="status" aria-live="polite"></p>
+        </section>
+
+        <aside class="feed-sidebar" aria-label="Camera feeds">
+          <div class="feed-sidebar-heading">
+            <div>
+              <p class="eyebrow">CAMERA FEEDS</p>
+              <h2 class="visually-hidden">Choose a camera feed</h2>
+            </div>
+            <div class="feed-summary">
+              <span class="feed-count">4 FEEDS</span>
+              <span class="active-count"><span class="active-count-dot" aria-hidden="true"></span><span id="active-feed-count">0 LIVE</span></span>
+            </div>
+          </div>
+          <nav class="feed-list" id="feed-selector" aria-label="Choose a camera feed">
+            <button class="feed-choice is-active" type="button" data-select-id="all" aria-pressed="true">
+              <span class="feed-camera-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 0 1.5 9v6A2.5 2.5 0 0 0 4 17.5h10a2.5 2.5 0 0 0 2.5-2.5v-1.1l4.8 3.2a.8.8 0 0 0 1.2-.7V7.6a.8.8 0 0 0-1.2-.7l-4.8 3.2V9A2.5 2.5 0 0 0 14 6.5H4Z"/></svg>
+              </span>
+              <span class="feed-copy"><strong>PBB All Access</strong><small>Camera Feed 01</small></span>
+              <span class="feed-item-status" data-feed-status="all">SELECTED</span>
+            </button>
+            <button class="feed-choice" type="button" data-select-id="din" aria-pressed="false">
+              <span class="feed-camera-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 0 1.5 9v6A2.5 2.5 0 0 0 4 17.5h10a2.5 2.5 0 0 0 2.5-2.5v-1.1l4.8 3.2a.8.8 0 0 0 1.2-.7V7.6a.8.8 0 0 0-1.2-.7l-4.8 3.2V9A2.5 2.5 0 0 0 14 6.5H4Z"/></svg>
+              </span>
+              <span class="feed-copy"><strong>PBB Dining Area</strong><small>Camera Feed 02</small></span>
+              <span class="feed-item-status" data-feed-status="din">READY</span>
+            </button>
+            <button class="feed-choice" type="button" data-select-id="ext" aria-pressed="false">
+              <span class="feed-camera-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 0 1.5 9v6A2.5 2.5 0 0 0 4 17.5h10a2.5 2.5 0 0 0 2.5-2.5v-1.1l4.8 3.2a.8.8 0 0 0 1.2-.7V7.6a.8.8 0 0 0-1.2-.7l-4.8 3.2V9A2.5 2.5 0 0 0 14 6.5H4Z"/></svg>
+              </span>
+              <span class="feed-copy"><strong>PBB External Den</strong><small>Camera Feed 03</small></span>
+              <span class="feed-item-status" data-feed-status="ext">READY</span>
+            </button>
+            <button class="feed-choice" type="button" data-select-id="main" aria-pressed="false">
+              <span class="feed-camera-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 0 1.5 9v6A2.5 2.5 0 0 0 4 17.5h10a2.5 2.5 0 0 0 2.5-2.5v-1.1l4.8 3.2a.8.8 0 0 0 1.2-.7V7.6a.8.8 0 0 0-1.2-.7l-4.8 3.2V9A2.5 2.5 0 0 0 14 6.5H4Z"/></svg>
+              </span>
+              <span class="feed-copy"><strong>PBB Main Live</strong><small>Camera Feed 04</small></span>
+              <span class="feed-item-status" data-feed-status="main">READY</span>
+            </button>
+          </nav>
+        </aside>
+      </main>
+    </div>
+
+    <dialog class="source-dialog" id="source-dialog" aria-labelledby="dialog-title">
+      <form class="dialog-content" id="source-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">FEED SETUP</p>
+            <h2 id="dialog-title">Connect a feed</h2>
+          </div>
+          <button class="dialog-close" id="close-dialog-button" type="button" aria-label="Close dialog">×</button>
+        </div>
+        <p class="dialog-copy">Enter an authorized, publicly accessible HTTPS DASH or HLS manifest URL. Query strings, embedded credentials, and DRM keys are not supported.</p>
+        <label class="dialog-label" for="manifest-url">Manifest URL</label>
+        <input id="manifest-url" name="manifestUrl" type="url" inputmode="url" placeholder="https://example.com/live/manifest.mpd" autocomplete="off" required>
+        <p class="form-error" id="source-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="header-button" id="cancel-dialog-button" type="button">Cancel</button>
+          <button class="primary-button" type="submit">Load feed</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
