@@ -57,7 +57,8 @@ for (const feed of feeds) {
     player: null,
     video: document.querySelector(`#video-${feed.id}`),
     tile: document.querySelector(`[data-feed-id="${feed.id}"]`),
-    active: false
+    active: false,
+    appliedQuality: null
   });
 }
 
@@ -175,6 +176,7 @@ async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
   status.classList.remove('is-live');
   state.video.controls = false;
   state.active = false;
+  state.appliedQuality = null;
   emptyState.hidden = false;
   updateFeedSidebar();
 
@@ -214,6 +216,7 @@ async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
     await state.video.play().catch(() => {
       showMessage(`${feeds.find((feed) => feed.id === feedId).name} loaded, but autoplay was blocked.`);
     });
+    syncPlaybackWithLayout();
   } catch (error) {
     showPlaybackError(feedId, error);
     button.textContent = state.active ? 'Change feed' : 'Connect feed';
@@ -278,6 +281,7 @@ function selectFeed(feedId) {
   document.querySelector('#connection-label').textContent = selectedState.active ? 'FEED CONNECTED' : 'NO FEED CONNECTED';
   updateFeedSidebar();
   updateQualityOptions();
+  syncPlaybackWithLayout();
 }
 
 function updateFeedSidebar() {
@@ -303,6 +307,24 @@ function setLayout(layout) {
   document.querySelector('#single-view-button').setAttribute('aria-pressed', String(singleView));
   document.querySelector('#four-view-button').classList.toggle('is-active', !singleView);
   document.querySelector('#four-view-button').setAttribute('aria-pressed', String(!singleView));
+  syncPlaybackWithLayout();
+}
+
+function syncPlaybackWithLayout() {
+  const singleView = stage.classList.contains('stage--single');
+  feedState.forEach((state, id) => {
+    if (!state.active) {
+      return;
+    }
+
+    if (singleView && id !== selectedFeedId) {
+      if (!state.video.paused) {
+        state.video.pause();
+      }
+    } else if (state.video.paused) {
+      state.video.play().catch(() => {});
+    }
+  });
 }
 
 function toggleAudio(feedId) {
@@ -415,8 +437,13 @@ function changeQuality() {
   }
 
   const selectedHeight = qualitySelect.value;
+  if (state.appliedQuality === selectedHeight) {
+    return;
+  }
+
   if (selectedHeight === 'auto') {
     state.player.configure('abr.enabled', true);
+    state.appliedQuality = 'auto';
     return;
   }
 
@@ -426,6 +453,11 @@ function changeQuality() {
     .sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0];
   if (track) {
     state.player.selectVariantTrack(track, true);
+    state.appliedQuality = selectedHeight;
+  } else {
+    state.player.configure('abr.enabled', true);
+    state.appliedQuality = 'auto';
+    qualitySelect.value = 'auto';
   }
 }
 
