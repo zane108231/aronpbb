@@ -334,12 +334,23 @@ if (playerContainer) {
     controlsIdleTimer = setTimeout(() => {
       if (qualityDropdown && !qualityDropdown.hidden) return; // keep visible if dropdown is open
       playerContainer.classList.add('is-idle');
+      if (isMobilePlayerFullscreen()) {
+        playerContainer.classList.remove('controls-visible');
+      }
     }, 3200);
   };
 
   playerContainer.addEventListener('mousemove', resetIdleTimer);
   playerContainer.addEventListener('touchstart', resetIdleTimer, { passive: true });
   playerContainer.addEventListener('pointerdown', resetIdleTimer);
+  stage?.addEventListener('click', () => {
+    if (!isMobilePlayerFullscreen()) return;
+    if (playerContainer.classList.toggle('controls-visible')) {
+      resetIdleTimer();
+    } else {
+      clearTimeout(controlsIdleTimer);
+    }
+  });
   playerContainer.addEventListener('mouseleave', () => {
     if (qualityDropdown && !qualityDropdown.hidden) return;
     playerContainer.classList.add('is-idle');
@@ -760,6 +771,10 @@ function updateFullscreenState() {
   const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
   if (isFs !== wasFullscreen) {
     wasFullscreen = isFs;
+    if (playerContainer) {
+      playerContainer.classList.remove('controls-visible', 'is-idle');
+      clearTimeout(controlsIdleTimer);
+    }
     const orientation = window.screen && window.screen.orientation;
     if (isFs && orientation && typeof orientation.lock === 'function') {
       try {
@@ -794,6 +809,12 @@ function updateFullscreenState() {
   if (activeState && activeState.player) {
     applyQualityToPlayer(activeState.player);
   }
+}
+
+function isMobilePlayerFullscreen() {
+  const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+  return fullscreenElement === playerContainer &&
+    window.matchMedia('(max-width: 960px), (max-height: 520px)').matches;
 }
 
 function handleOrientationLockError(error) {
