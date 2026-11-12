@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="ios-hls-proxy-base-url" content="http://192.168.254.110:4000">
     <meta name="theme-color" content="#06070a">
     <title>PBB Live Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -84,7 +85,7 @@
               <!-- Feed 1: All Access -->
               <article class="feed-tile is-selected" data-feed-id="all">
                 <div class="tile-video-wrap">
-                  <video id="video-all" playsinline webkit-playsinline muted preload="none" aria-label="PBB All Access video"></video>
+                  <video id="video-all" playsinline webkit-playsinline muted autoplay preload="auto" aria-label="PBB All Access video"></video>
                   <div class="video-empty">
                     <span class="play-glyph" aria-hidden="true">▶</span>
                     <span>Connecting feed...</span>
@@ -99,7 +100,7 @@
               <!-- Feed 2: Dining Area -->
               <article class="feed-tile" data-feed-id="din">
                 <div class="tile-video-wrap">
-                  <video id="video-din" playsinline webkit-playsinline muted preload="none" aria-label="PBB Dining Area video"></video>
+                  <video id="video-din" playsinline webkit-playsinline muted autoplay preload="auto" aria-label="PBB Dining Area video"></video>
                   <div class="video-empty">
                     <span class="play-glyph" aria-hidden="true">▶</span>
                     <span>Connecting feed...</span>
@@ -114,7 +115,7 @@
               <!-- Feed 3: External Den -->
               <article class="feed-tile" data-feed-id="ext">
                 <div class="tile-video-wrap">
-                  <video id="video-ext" playsinline webkit-playsinline muted preload="none" aria-label="PBB External Den video"></video>
+                  <video id="video-ext" playsinline webkit-playsinline muted autoplay preload="auto" aria-label="PBB External Den video"></video>
                   <div class="video-empty">
                     <span class="play-glyph" aria-hidden="true">▶</span>
                     <span>Connecting feed...</span>
@@ -129,7 +130,7 @@
               <!-- Feed 4: Main Live -->
               <article class="feed-tile" data-feed-id="main">
                 <div class="tile-video-wrap">
-                  <video id="video-main" playsinline webkit-playsinline muted preload="none" aria-label="PBB Main Live video"></video>
+                  <video id="video-main" playsinline webkit-playsinline muted autoplay preload="auto" aria-label="PBB Main Live video"></video>
                   <div class="video-empty">
                     <span class="play-glyph" aria-hidden="true">▶</span>
                     <span>Connecting feed...</span>

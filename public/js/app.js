@@ -34,6 +34,39 @@ const builtInStreams = {
   }
 };
 
+function isIOSDevice() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function getIosHlsProxyBaseUrl() {
+  const configuredBase = document.querySelector('meta[name="ios-hls-proxy-base-url"]')?.content.trim();
+  if (!configuredBase) {
+    throw new Error('Configure the iOS HLS proxy base URL in index.html.');
+  }
+
+  const baseUrl = new URL(configuredBase);
+  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(baseUrl.hostname);
+  const isSameHostHttp = baseUrl.protocol === 'http:' &&
+    window.location.protocol === 'http:' &&
+    baseUrl.hostname === window.location.hostname;
+  if (baseUrl.protocol !== 'https:' && !(baseUrl.protocol === 'http:' && (isLocalhost || isSameHostHttp))) {
+    throw new Error('The iOS HLS proxy URL must use HTTPS.');
+  }
+  if (baseUrl.username || baseUrl.password) {
+    throw new Error('Do not put credentials in the iOS HLS proxy URL.');
+  }
+
+  return baseUrl;
+}
+
+function buildIosProxyManifestUrl(feedId, baseUrl) {
+  const url = new URL(baseUrl.href);
+  const basePath = url.pathname.replace(/\/+$/, '');
+  url.pathname = `${basePath}/stream/${encodeURIComponent(feedId)}.mpd`;
+  return url;
+}
+
 /* ========================================================
    AUDIO BOOSTER & CROSS-FEED SOUND ENGINE
    ======================================================== */
@@ -384,6 +417,19 @@ document.addEventListener('DOMContentLoaded', initializeBuiltInStreams, { once: 
    INITIALIZE & LOAD STREAMS
    ======================================================== */
 function initializeBuiltInStreams() {
+  const useIosProxy = isIOSDevice();
+  let iosProxyBaseUrl = null;
+
+  if (useIosProxy) {
+    playerContainer?.classList.add('is-ios-hls');
+    try {
+      iosProxyBaseUrl = getIosHlsProxyBaseUrl();
+    } catch (error) {
+      feeds.forEach(({ id }) => showIosHlsError(id, error));
+      return;
+    }
+  }
+
   if (!window.shaka || !shaka.Player.isBrowserSupported()) {
     feeds.forEach(({ id }) => {
       const state = feedState.get(id);
@@ -408,6 +454,10 @@ function initializeBuiltInStreams() {
   });
 
   Promise.all(feeds.map((feed) => {
+    if (useIosProxy) {
+      return loadFeed(feed.id, buildIosProxyManifestUrl(feed.id, iosProxyBaseUrl), null, false);
+    }
+
     const stream = builtInStreams[feed.id];
     return loadFeed(feed.id, buildTokenizedManifestUrl(stream), {
       clearKeys: {
@@ -424,6 +474,13 @@ function buildTokenizedManifestUrl(stream) {
 }
 
 async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
+  if (isIOSDevice()) {
+    playerContainer?.classList.add('is-ios-hls');
+    if (manifestUrl.pathname.toLowerCase().endsWith('.m3u8')) {
+      return loadIosHlsFeed(feedId, manifestUrl, activateFeed);
+    }
+  }
+
   const state = feedState.get(feedId);
   const status = state.tile.querySelector('.tile-state');
   const emptyState = state.tile.querySelector('.video-empty');
@@ -518,6 +575,97 @@ async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
   } catch (error) {
     showPlaybackError(feedId, error);
   }
+}
+
+async function loadIosHlsFeed(feedId, manifestUrl, activateFeed) {
+  const state = feedState.get(feedId);
+  const status = state.tile.querySelector('.tile-state');
+  const emptyState = state.tile.querySelector('.video-empty');
+  const emptyMessage = emptyState.querySelector('span:last-child');
+  const video = state.video;
+
+  state.active = false;
+  state.appliedQuality = null;
+  video.controls = false;
+  video.autoplay = true;
+  video.defaultMuted = true;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  video.setAttribute('muted', '');
+  video.setAttribute('autoplay', '');
+  emptyState.hidden = false;
+  if (emptyMessage) {
+    emptyMessage.textContent = 'Connecting feed...';
+  }
+
+  video.onloadedmetadata = () => {
+    state.active = true;
+    if (status) {
+      status.textContent = 'CONNECTED';
+      status.classList.add('is-live');
+    }
+    updateFeedSidebar();
+    syncPlaybackWithLayout();
+  };
+
+  video.onplaying = () => {
+    state.active = true;
+    emptyState.hidden = true;
+    if (status) {
+      status.textContent = 'CONNECTED';
+      status.classList.add('is-live');
+    }
+    updateFeedSidebar();
+    updatePlayPauseUI();
+  };
+
+  video.onerror = () => {
+    const code = video.error?.code;
+    const message = code
+      ? `HLS playback failed (media error ${code}). Check the proxy playlist and segments.`
+      : 'HLS playback failed. Check the proxy playlist and segments.';
+    showIosHlsError(feedId, new Error(message));
+  };
+
+  video.src = manifestUrl.href;
+  video.load();
+
+  if (activateFeed || feedId === selectedFeedId) {
+    selectFeed(feedId);
+  } else {
+    syncPlaybackWithLayout();
+  }
+
+  if (activateFeed || feedId === selectedFeedId || stage.classList.contains('stage--grid')) {
+    try {
+      await video.play();
+    } catch (error) {
+      if (error.name === 'NotAllowedError') {
+        if (emptyMessage) {
+          emptyMessage.textContent = 'Tap Play to start this stream.';
+        }
+        showMessage('Autoplay was blocked. Tap Play to start the stream.');
+      } else if (error.name !== 'AbortError') {
+        showIosHlsError(feedId, error);
+      }
+    }
+  }
+}
+
+function showIosHlsError(feedId, error) {
+  const state = feedState.get(feedId);
+  if (!state) return;
+
+  const message = error?.message || 'iOS HLS playback is unavailable.';
+  const emptyState = state.tile.querySelector('.video-empty');
+  const emptyMessage = emptyState.querySelector('span:last-child');
+  if (emptyMessage) {
+    emptyMessage.textContent = message;
+  }
+  showPlaybackError(feedId, new Error(message));
 }
 
 function showPlaybackError(feedId, error) {

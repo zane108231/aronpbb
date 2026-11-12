@@ -748,6 +748,10 @@ body {
   pointer-events: none;
 }
 
+.player-container.is-ios-hls .pill-quality-menu-wrap {
+  display: none;
+}
+
 /* ========================================================
    CAMERA FEEDS SIDEBAR (Strictly matching reference)
    ======================================================== */
