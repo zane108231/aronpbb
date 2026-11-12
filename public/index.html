@@ -11,8 +11,38 @@
     <link rel="stylesheet" href="/css/style.css">
     <script defer src="/vendor/shaka-player/shaka-player.compiled.js"></script>
     <script defer src="/js/app.js"></script>
+    <script defer src="/js/viewer-count.js"></script>
+    <script defer src="/js/chat.js"></script>
   </head>
   <body>
+    <div class="site-loader" id="site-loader" aria-label="Loading PBB Live Studio">
+      <div class="loader-content">
+        <div class="loader-emblem" aria-hidden="true">
+          <svg class="loader-default-mark" id="loader-default-mark" viewBox="0 0 96 96" fill="none">
+            <defs>
+              <linearGradient id="loader-mark-gradient" x1="20" y1="72" x2="76" y2="24" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#e50914"/>
+                <stop offset="1" stop-color="#67b7ff"/>
+              </linearGradient>
+            </defs>
+            <path d="M22 68a36 36 0 1 1 52 0" stroke="url(#loader-mark-gradient)" stroke-width="5" stroke-linecap="round"/>
+            <path d="M33 59a21 21 0 1 1 30 0" stroke="url(#loader-mark-gradient)" stroke-width="5" stroke-linecap="round"/>
+            <path d="M43 50a7 7 0 1 1 10 0" stroke="url(#loader-mark-gradient)" stroke-width="5" stroke-linecap="round"/>
+          </svg>
+          <img class="loader-custom-image" id="loader-custom-image" src="/custom-loader-image.png" alt="" hidden>
+        </div>
+        <p class="loader-brand">PBB STREAM ONLINE</p>
+        <p class="loader-status">INITIALIZING STUDIO</p>
+        <div class="loader-progress-row">
+          <div class="loader-progress-track" id="loader-progress" role="progressbar" aria-label="Studio loading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="loader-progress-bar" id="loader-progress-bar"></div>
+          </div>
+          <span class="loader-progress-text" id="loader-progress-text">0%</span>
+        </div>
+        <button class="loader-enter-button" id="loader-enter-button" type="button" hidden>ENTER STUDIO</button>
+      </div>
+    </div>
+
     <!-- Main Window App Shell -->
     <div class="studio-window" id="studio-window">
       <!-- Window Title Bar -->
@@ -176,6 +206,12 @@
             </button>
           </div>
 
+          <div class="viewer-count" id="viewer-count" data-state="loading" aria-label="Loading viewer count" title="Active browser profiles seen in the last 30 seconds">
+            <span class="viewer-count-dot" aria-hidden="true"></span>
+            <strong class="viewer-count-value" id="viewer-count-value">—</strong>
+            <span class="viewer-count-label">VIEWERS ONLINE</span>
+          </div>
+
           <nav class="sidebar-feed-list" aria-label="Camera feeds selection">
             <!-- Feed 1: PBB All Access -->
             <button class="feed-card is-active" type="button" data-select-id="all">
@@ -225,6 +261,32 @@
               <span class="feed-status-badge badge--hd" data-feed-badge="main">HD</span>
             </button>
           </nav>
+
+          <section class="live-chat" id="live-chat" aria-labelledby="live-chat-title" data-state="connecting">
+            <header class="live-chat-header">
+              <div>
+                <h2 id="live-chat-title">LIVE CHAT</h2>
+                <span class="live-chat-subtitle">Chat with other viewers</span>
+              </div>
+              <span class="chat-live-indicator"><span class="chat-live-dot" aria-hidden="true"></span> LIVE</span>
+            </header>
+
+            <ol class="chat-messages" id="chat-messages" aria-label="Chat messages" aria-live="polite" aria-relevant="additions">
+              <li class="chat-empty">No messages yet. Say hello!</li>
+            </ol>
+
+            <p class="chat-status" id="chat-status" role="status" aria-live="polite"></p>
+
+            <form class="chat-form" id="chat-form">
+              <label class="chat-sr-only" for="chat-name">Your name</label>
+              <input class="chat-input chat-name" id="chat-name" name="name" type="text" maxlength="24" placeholder="Your name" autocomplete="nickname" required>
+              <div class="chat-compose">
+                <label class="chat-sr-only" for="chat-text">Message</label>
+                <input class="chat-input" id="chat-text" name="text" type="text" maxlength="280" placeholder="Write a message..." autocomplete="off" required>
+                <button class="chat-send" id="chat-send" type="submit">SEND</button>
+              </div>
+            </form>
+          </section>
 
           <footer class="sidebar-footer">
             <span>ENCODED BY JIYU</span>

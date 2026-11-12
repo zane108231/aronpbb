@@ -171,6 +171,7 @@ let selectedFeedId = 'all';
 let pendingFeedId = null;
 let currentQuality = 'auto'; // 'auto' or number height (1080, 720, etc.)
 let controlsIdleTimer = null;
+let wasFullscreen = false;
 
 // Initialize Feed State
 for (const feed of feeds) {
@@ -535,7 +536,7 @@ function selectFeed(feedId) {
   const isGrid = stage.classList.contains('stage--grid');
   const windowTitleText = document.querySelector('#window-title-text');
   if (windowTitleText) {
-    windowTitleText.textContent = isGrid ? 'PBB Studio — 4-Camera Multi-View' : `${feed.name} — Live`;
+    windowTitleText.textContent = isGrid ? 'PBB Studio Multi-View' : `${feed.name} — Live`;
   }
 
   // Update tiles
@@ -671,7 +672,7 @@ function setLayout(layout) {
   const windowTitleText = document.querySelector('#window-title-text');
   const feed = feeds.find((item) => item.id === selectedFeedId);
   if (windowTitleText) {
-    windowTitleText.textContent = singleView ? `${feed.name} — Live` : 'PBB Studio — 4-Camera Multi-View';
+    windowTitleText.textContent = singleView ? `${feed.name} — Live` : 'PBB Studio Multi-View';
   }
 
   if (btnMultiView) {
@@ -757,6 +758,25 @@ async function toggleFullscreen() {
 
 function updateFullscreenState() {
   const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+  if (isFs !== wasFullscreen) {
+    wasFullscreen = isFs;
+    const orientation = window.screen && window.screen.orientation;
+    if (isFs && orientation && typeof orientation.lock === 'function') {
+      try {
+        const lockRequest = orientation.lock('landscape');
+        if (lockRequest && typeof lockRequest.catch === 'function') {
+          lockRequest.catch(handleOrientationLockError);
+        }
+      } catch (error) {
+        handleOrientationLockError(error);
+      }
+    } else if (isFs && window.matchMedia('(max-width: 960px), (max-height: 520px)').matches) {
+      showMessage('Automatic rotation is unavailable in this browser. Rotate your device for landscape fullscreen.');
+    } else if (!isFs && orientation && typeof orientation.unlock === 'function') {
+      orientation.unlock();
+    }
+  }
+
   if (!btnFullscreen) return;
 
   const iconEnter = btnFullscreen.querySelector('.icon-fs-enter');
@@ -773,6 +793,13 @@ function updateFullscreenState() {
   const activeState = feedState.get(selectedFeedId);
   if (activeState && activeState.player) {
     applyQualityToPlayer(activeState.player);
+  }
+}
+
+function handleOrientationLockError(error) {
+  console.warn('Unable to lock landscape orientation:', error);
+  if (window.matchMedia('(max-width: 960px), (max-height: 520px)').matches) {
+    showMessage('Automatic rotation was blocked. Rotate your device for landscape fullscreen.');
   }
 }
 
@@ -854,6 +881,30 @@ function toggleCleanView() {
 function initializeLoader() {
   if (!siteLoader || !loaderProgress || !loaderProgressBar || !loaderProgressText || !loaderEnterButton) {
     return;
+  }
+
+  const loaderCustomImage = document.querySelector('#loader-custom-image');
+  const loaderDefaultMark = document.querySelector('#loader-default-mark');
+  if (loaderCustomImage && loaderDefaultMark) {
+    const showCustomImage = () => {
+      loaderCustomImage.hidden = false;
+      loaderDefaultMark.hidden = true;
+    };
+    const showDefaultMark = () => {
+      loaderCustomImage.hidden = true;
+      loaderDefaultMark.hidden = false;
+    };
+
+    if (loaderCustomImage.complete) {
+      if (loaderCustomImage.naturalWidth > 0) {
+        showCustomImage();
+      } else {
+        showDefaultMark();
+      }
+    } else {
+      loaderCustomImage.addEventListener('load', showCustomImage, { once: true });
+      loaderCustomImage.addEventListener('error', showDefaultMark, { once: true });
+    }
   }
 
   const startedAt = performance.now();
