@@ -41,8 +41,8 @@ function isIOSDevice() {
 
 function getIosHlsProxyBaseUrl() {
   const configuredBase = document.querySelector('meta[name="ios-hls-proxy-base-url"]')?.content.trim();
-  if (!configuredBase) {
-    throw new Error('Configure the iOS HLS proxy base URL in index.html.');
+  if (!configuredBase || configuredBase === 'auto') {
+    return new URL(window.location.origin);
   }
 
   const baseUrl = new URL(configuredBase);
