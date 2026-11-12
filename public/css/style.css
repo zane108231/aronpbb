@@ -1379,6 +1379,13 @@ body {
   pointer-events: auto;
 }
 
+@media (max-width: 960px), (max-height: 520px) {
+  .player-container:fullscreen .stage--single .feed-tile video,
+  .player-container:-webkit-full-screen .stage--single .feed-tile video {
+    object-fit: cover;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
