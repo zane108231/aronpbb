@@ -956,6 +956,7 @@ body {
 }
 
 .sidebar-footer {
+  flex: 0 0 auto;
   margin-top: auto;
   text-align: center;
   padding-top: 14px;
@@ -970,10 +971,10 @@ body {
 
 .live-chat {
   display: flex;
-  flex: 1 1 220px;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 10px;
-  min-height: 210px;
+  min-height: 270px;
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
@@ -1106,6 +1107,7 @@ body {
 
 .chat-form {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 7px;
 }
@@ -1134,7 +1136,13 @@ body {
 
 .chat-compose {
   display: flex;
+  width: 100%;
   gap: 7px;
+}
+
+.chat-compose .chat-input {
+  flex: 1 1 0;
+  width: 0;
 }
 
 .chat-send {
@@ -1211,8 +1219,8 @@ body {
 
 @media (max-width: 600px) {
   .live-chat {
-    flex-basis: 260px;
-    min-height: 240px;
+    flex: 0 0 auto;
+    min-height: 300px;
   }
   .player-controls-pill {
     padding: 10px 12px;
