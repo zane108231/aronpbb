@@ -712,6 +712,13 @@ function selectFeed(feedId) {
     state.tile.classList.toggle('is-selected', selected);
   });
 
+  // Keep the user-selected quality locked on the newly selected feed
+  const selectedState = feedState.get(feedId);
+  if (selectedState && selectedState.player) {
+    applyQualityToPlayer(selectedState.player);
+  }
+  syncGridQualityCap();
+
   updateFeedSidebar();
   updatePlayPauseUI();
   updateQualityMenu();
@@ -747,10 +754,11 @@ function updateFeedSidebar() {
    ======================================================== */
 function setQuality(quality) {
   currentQuality = quality;
-  const state = feedState.get(selectedFeedId);
-  if (state && state.player) {
-    applyQualityToPlayer(state.player);
-  }
+  feedState.forEach((state) => {
+    if (state.player) {
+      applyQualityToPlayer(state.player);
+    }
+  });
   syncGridQualityCap();
   updateQualityMenu();
 }
@@ -785,7 +793,7 @@ function applyQualityToPlayer(player) {
       .sort((a, b) => (b.height - a.height) || ((b.bandwidth || 0) - (a.bandwidth || 0)));
 
     if (tracks.length > 0) {
-      player.selectVariantTrack(tracks[0], true);
+      player.selectVariantTrack(tracks[0], false);
     }
   }
 }
@@ -834,7 +842,7 @@ function updatePlayPauseUI() {
 
 function isLowPowerPlaybackDevice() {
   const ua = navigator.userAgent || '';
-  return /SmartTV|Smart-TV|Tizen|Web0S|webOS|Android TV|BRAVIA|HbbTV|NetCast|VIDAA|AFTS|Fire TV|TV Safari/i.test(ua) ||
+  return /SmartTV|Smart-TV|Tizen|Web0S|webOS|Android TV|GoogleTV|BRAVIA|HbbTV|NetCast|VIDAA|AFTS|AFTSS|Fire TV|TV Safari|Devant|Coocaa|Konka|Skyworth|HiSense|TCL|Philips|Sharp|JVC|Telefunken|Strong|Tesla|Blaupunkt|Metz|LOEWE|Technisat|iFFALCON|JOIN|NetTV/i.test(ua) ||
     (Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4);
 }
 
@@ -842,7 +850,8 @@ const GRID_QUALITY_CAP = 480;
 
 function syncGridQualityCap() {
   const inGrid = stage.classList.contains('stage--grid');
-  const cap = (inGrid && isLowPowerPlaybackDevice()) ? GRID_QUALITY_CAP : null;
+  // Only auto-quality gets capped on weak devices; an explicit user choice is always honored.
+  const cap = (inGrid && currentQuality === 'auto' && isLowPowerPlaybackDevice()) ? GRID_QUALITY_CAP : null;
 
   feedState.forEach((state) => {
     const player = state.player;
@@ -851,6 +860,8 @@ function syncGridQualityCap() {
     if (!cap) {
       if (state.gridCapped) {
         state.gridCapped = false;
+        applyQualityToPlayer(player);
+      } else if (currentQuality !== 'auto') {
         applyQualityToPlayer(player);
       }
       return;
@@ -868,7 +879,7 @@ function syncGridQualityCap() {
       .filter((t) => Number.isFinite(t.height) && t.height > 0 && t.height <= cap)
       .sort((a, b) => (b.height - a.height) || ((b.bandwidth || 0) - (a.bandwidth || 0)));
     if (tracks.length > 0) {
-      player.selectVariantTrack(tracks[0], true);
+      player.selectVariantTrack(tracks[0], false);
     }
   });
 }
@@ -895,6 +906,8 @@ function setLayout(layout) {
 
 function syncPlaybackWithLayout() {
   const singleView = stage.classList.contains('stage--single');
+  const lowPower = isLowPowerPlaybackDevice();
+  let resumeIndex = 0;
 
   feedState.forEach((state, id) => {
     if (!state.active || !state.video) return;
@@ -903,8 +916,24 @@ function syncPlaybackWithLayout() {
       if (!state.video.paused) {
         state.video.pause();
       }
-    } else if (state.video.paused) {
-      state.video.play().catch(() => {});
+      return;
+    }
+
+    if (state.video.paused) {
+      // On weak devices (smart TVs), stagger resumes so decoders aren't hit all at once
+      const delay = (lowPower && !singleView) ? resumeIndex * 400 : 0;
+      resumeIndex += 1;
+      setTimeout(() => {
+        if (!state.video || !state.video.paused) return;
+        state.video.play().catch(() => {
+          // Retry once — decoder/bandwidth may still be busy
+          setTimeout(() => {
+            if (state.video && state.video.paused) {
+              state.video.play().catch(() => {});
+            }
+          }, 1200);
+        });
+      }, delay);
     }
   });
 
