@@ -840,9 +840,13 @@ function updatePlayPauseUI() {
   btnPlayPause.title = isPaused ? 'Play' : 'Pause';
 }
 
-function isLowPowerPlaybackDevice() {
+function isTvDevice() {
   const ua = navigator.userAgent || '';
-  return /SmartTV|Smart-TV|Tizen|Web0S|webOS|Android TV|GoogleTV|BRAVIA|HbbTV|NetCast|VIDAA|AFTS|AFTSS|Fire TV|TV Safari|Devant|Coocaa|Konka|Skyworth|HiSense|TCL|Philips|Sharp|JVC|Telefunken|Strong|Tesla|Blaupunkt|Metz|LOEWE|Technisat|iFFALCON|JOIN|NetTV/i.test(ua) ||
+  return /SmartTV|Smart-TV|Tizen|Web0S|webOS|Android TV|GoogleTV|BRAVIA|HbbTV|NetCast|VIDAA|AFTS|AFTSS|Fire TV|TV Safari|Devant|Coocaa|Konka|Skyworth|HiSense|TCL|Philips|Sharp|JVC|Telefunken|Strong|Tesla|Blaupunkt|Metz|LOEWE|Technisat|iFFALCON|JOIN|NetTV/i.test(ua);
+}
+
+function isLowPowerPlaybackDevice() {
+  return isTvDevice() ||
     (Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4);
 }
 
@@ -907,13 +911,16 @@ function setLayout(layout) {
 function syncPlaybackWithLayout() {
   const singleView = stage.classList.contains('stage--single');
   const lowPower = isLowPowerPlaybackDevice();
+  // Some TV browsers can't resume MSE playback after pause() — on those devices
+  // keep every feed decoding (muted) so Multi-View never has to resume them.
+  const keepAlive = isTvDevice();
   let resumeIndex = 0;
 
   feedState.forEach((state, id) => {
     if (!state.active || !state.video) return;
 
     if (singleView && id !== selectedFeedId) {
-      if (!state.video.paused) {
+      if (!keepAlive && !state.video.paused) {
         state.video.pause();
       }
       return;
