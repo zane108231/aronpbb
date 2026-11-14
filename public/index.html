@@ -72,6 +72,13 @@
               </svg>
             </button>
 
+            <!-- Viewer Count Badge (floating over video) -->
+            <div class="viewer-count" id="viewer-count" data-state="loading" aria-label="Loading viewer count" title="Active browser profiles seen in the last 30 seconds">
+              <span class="viewer-count-dot" aria-hidden="true"></span>
+              <strong class="viewer-count-value" id="viewer-count-value">—</strong>
+              <span class="viewer-count-label"></span>
+            </div>
+
             <!-- Center "Tap to unmute" Button (Image 2 reference) -->
             <button class="player-unmute-overlay" id="player-unmute-overlay" type="button" aria-label="Tap to unmute">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -205,12 +212,6 @@
             <button class="btn-support" id="btn-support" type="button">
               <span class="heart-icon" aria-hidden="true">♥</span> SUPPORT
             </button>
-          </div>
-
-          <div class="viewer-count" id="viewer-count" data-state="loading" aria-label="Loading viewer count" title="Active browser profiles seen in the last 30 seconds">
-            <span class="viewer-count-dot" aria-hidden="true"></span>
-            <strong class="viewer-count-value" id="viewer-count-value">—</strong>
-            <span class="viewer-count-label">VIEWERS ONLINE</span>
           </div>
 
           <nav class="sidebar-feed-list" aria-label="Camera feeds selection">

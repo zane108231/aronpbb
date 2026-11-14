@@ -370,20 +370,27 @@ if (playerContainer) {
       if (isMobilePlayerFullscreen()) {
         playerContainer.classList.remove('controls-visible');
       }
-    }, 3200);
+    }, 2000);
   };
 
   playerContainer.addEventListener('mousemove', resetIdleTimer);
   playerContainer.addEventListener('touchstart', resetIdleTimer, { passive: true });
   playerContainer.addEventListener('pointerdown', resetIdleTimer);
   stage?.addEventListener('click', () => {
-    if (!isMobilePlayerFullscreen()) return;
-    if (playerContainer.classList.toggle('controls-visible')) {
+    if (isMobilePlayerFullscreen()) {
+      if (playerContainer.classList.toggle('controls-visible')) {
+        resetIdleTimer();
+      } else {
+        clearTimeout(controlsIdleTimer);
+      }
+      return;
+    }
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      playerContainer.classList.remove('is-idle');
       resetIdleTimer();
-    } else {
-      clearTimeout(controlsIdleTimer);
     }
   });
+  resetIdleTimer();
   playerContainer.addEventListener('mouseleave', () => {
     if (qualityDropdown && !qualityDropdown.hidden) return;
     playerContainer.classList.add('is-idle');
@@ -565,6 +572,7 @@ async function loadFeed(feedId, manifestUrl, drm = null, activateFeed = true) {
 
     // Apply current quality rule (e.g. locked 1080p or auto)
     applyQualityToPlayer(state.player);
+    syncGridQualityCap();
 
     await state.video.play().catch(() => {
       // Autoplay blocked: user will tap "Tap to unmute" or play
@@ -743,6 +751,7 @@ function setQuality(quality) {
   if (state && state.player) {
     applyQualityToPlayer(state.player);
   }
+  syncGridQualityCap();
   updateQualityMenu();
 }
 
@@ -823,6 +832,47 @@ function updatePlayPauseUI() {
   btnPlayPause.title = isPaused ? 'Play' : 'Pause';
 }
 
+function isLowPowerPlaybackDevice() {
+  const ua = navigator.userAgent || '';
+  return /SmartTV|Smart-TV|Tizen|Web0S|webOS|Android TV|BRAVIA|HbbTV|NetCast|VIDAA|AFTS|Fire TV|TV Safari/i.test(ua) ||
+    (Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4);
+}
+
+const GRID_QUALITY_CAP = 480;
+
+function syncGridQualityCap() {
+  const inGrid = stage.classList.contains('stage--grid');
+  const cap = (inGrid && isLowPowerPlaybackDevice()) ? GRID_QUALITY_CAP : null;
+
+  feedState.forEach((state) => {
+    const player = state.player;
+    if (!player) return;
+
+    if (!cap) {
+      if (state.gridCapped) {
+        state.gridCapped = false;
+        applyQualityToPlayer(player);
+      }
+      return;
+    }
+
+    state.gridCapped = true;
+    player.configure({
+      abr: {
+        enabled: false,
+        restrictions: { minHeight: 0, maxHeight: cap }
+      }
+    });
+
+    const tracks = player.getVariantTracks()
+      .filter((t) => Number.isFinite(t.height) && t.height > 0 && t.height <= cap)
+      .sort((a, b) => (b.height - a.height) || ((b.bandwidth || 0) - (a.bandwidth || 0)));
+    if (tracks.length > 0) {
+      player.selectVariantTrack(tracks[0], true);
+    }
+  });
+}
+
 function setLayout(layout) {
   const singleView = (layout === 'single');
   stage.classList.toggle('stage--single', singleView);
@@ -838,6 +888,7 @@ function setLayout(layout) {
     btnMultiView.classList.toggle('is-active', !singleView);
   }
 
+  syncGridQualityCap();
   syncPlaybackWithLayout();
   audioBooster.syncAllFeeds();
 }

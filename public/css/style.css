@@ -775,9 +775,12 @@ body {
 }
 
 .viewer-count {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 46;
   display: inline-flex;
   align-items: center;
-  align-self: flex-start;
   gap: 8px;
   padding: 7px 11px;
   border: 1px solid rgba(229, 9, 20, 0.25);
@@ -1298,7 +1301,7 @@ body {
   .player-container:focus-within .stage--grid ~ .player-controls-pill {
     opacity: 1;
     pointer-events: auto;
-    transform: none;
+    transform: translateX(-50%);
   }
   .pill-bottom-row {
     flex-wrap: nowrap;
@@ -1465,6 +1468,79 @@ body {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* Portrait phones/tablets: larger video area, video fills edge-to-edge */
+@media (max-width: 960px) and (orientation: portrait) {
+  .player-area {
+    aspect-ratio: 3 / 2;
+  }
+  .stage--single .feed-tile.is-selected,
+  .stage--single .feed-tile.is-selected .tile-video-wrap {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    aspect-ratio: auto;
+  }
+  .stage--single .feed-tile.is-selected video {
+    object-fit: cover;
+  }
+}
+
+/* Fullscreen edge-to-edge fill on any display (TVs, monitors, desktops) */
+.player-container:fullscreen,
+.player-container:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.player-container:fullscreen .stage,
+.player-container:-webkit-full-screen .stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: none;
+}
+
+.player-container:fullscreen .stage--single .feed-tile.is-selected,
+.player-container:-webkit-full-screen .stage--single .feed-tile.is-selected {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.player-container:fullscreen .stage--single .feed-tile.is-selected .tile-video-wrap,
+.player-container:-webkit-full-screen .stage--single .feed-tile.is-selected .tile-video-wrap {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+}
+
+.player-container:fullscreen .stage--single .feed-tile video,
+.player-container:-webkit-full-screen .stage--single .feed-tile video {
+  object-fit: cover;
+}
+
+.player-container:fullscreen .player-controls-pill,
+.player-container:-webkit-full-screen .player-controls-pill {
+  position: absolute;
+  z-index: 20;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
